@@ -1,13 +1,20 @@
 import React from 'react';
-import { Instagram, MessageCircle, ExternalLink } from 'lucide-react';
+import { Instagram, MessageCircle, ExternalLink, User, Lock } from 'lucide-react';
 import { AGENCY_CONFIG, TEAM_MEMBERS, getWhatsAppUrl } from '../data/agencyData';
 
 interface FooterProps {
   onScrollToSection: (sectionId: string) => void;
   onOpenCustomQuote: () => void;
+  onOpenCustomerDashboard?: () => void;
+  onOpenAdminDashboard?: () => void;
 }
 
-export const Footer: React.FC<FooterProps> = ({ onScrollToSection, onOpenCustomQuote }) => {
+export const Footer: React.FC<FooterProps> = ({
+  onScrollToSection,
+  onOpenCustomQuote,
+  onOpenCustomerDashboard,
+  onOpenAdminDashboard,
+}) => {
   return (
     <footer className="bg-[#05070c] border-t border-white/10 text-slate-400 text-xs sm:text-sm relative overflow-hidden">
       {/* Top Footer Section */}
@@ -31,7 +38,7 @@ export const Footer: React.FC<FooterProps> = ({ onScrollToSection, onOpenCustomQ
             </p>
 
             <p className="text-xs text-slate-400 leading-relaxed max-w-sm">
-              International website agency building modern, responsive, high-converting websites and ready-made templates for global businesses and creators.
+              International website agency building modern, responsive, high-converting websites and digital platforms for global businesses and founders.
             </p>
 
             <div className="pt-2">
@@ -79,10 +86,10 @@ export const Footer: React.FC<FooterProps> = ({ onScrollToSection, onOpenCustomQ
               </li>
               <li>
                 <button
-                  onClick={() => onScrollToSection('portfolio')}
+                  onClick={() => onScrollToSection('pricing')}
                   className="hover:text-white transition-colors cursor-pointer text-left"
                 >
-                  Portfolio
+                  Pricing
                 </button>
               </li>
               <li>
@@ -96,10 +103,10 @@ export const Footer: React.FC<FooterProps> = ({ onScrollToSection, onOpenCustomQ
             </ul>
           </div>
 
-          {/* WEBSITES */}
+          {/* CLIENT PORTAL & WEBSITES */}
           <div>
             <h4 className="font-bold text-xs uppercase tracking-wider text-white mb-4">
-              WEBSITES
+              PORTALS & SITES
             </h4>
             <ul className="space-y-3 text-xs text-slate-400">
               <li>
@@ -107,41 +114,39 @@ export const Footer: React.FC<FooterProps> = ({ onScrollToSection, onOpenCustomQ
                   onClick={() => onScrollToSection('templates')}
                   className="hover:text-white transition-colors cursor-pointer text-left"
                 >
-                  Business Websites
+                  Our Websites
                 </button>
               </li>
               <li>
                 <button
-                  onClick={() => onScrollToSection('templates')}
-                  className="hover:text-white transition-colors cursor-pointer text-left"
-                >
-                  E-Commerce
-                </button>
-              </li>
-              <li>
-                <button
-                  onClick={() => onScrollToSection('templates')}
-                  className="hover:text-white transition-colors cursor-pointer text-left"
-                >
-                  Restaurant
-                </button>
-              </li>
-              <li>
-                <button
-                  onClick={() => onScrollToSection('templates')}
-                  className="hover:text-white transition-colors cursor-pointer text-left"
-                >
-                  Portfolio
-                </button>
-              </li>
-              <li>
-                <button
-                  onClick={() => onScrollToSection('custom-website')}
+                  onClick={onOpenCustomQuote}
                   className="hover:text-white transition-colors cursor-pointer text-left text-blue-400"
                 >
                   Custom Websites
                 </button>
               </li>
+              {onOpenCustomerDashboard && (
+                <li>
+                  <button
+                    onClick={onOpenCustomerDashboard}
+                    className="hover:text-white transition-colors cursor-pointer text-left flex items-center gap-1.5 text-slate-300"
+                  >
+                    <User className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Customer Portal</span>
+                  </button>
+                </li>
+              )}
+              {onOpenAdminDashboard && (
+                <li>
+                  <button
+                    onClick={onOpenAdminDashboard}
+                    className="hover:text-white transition-colors cursor-pointer text-left flex items-center gap-1.5 text-slate-400"
+                  >
+                    <Lock className="w-3 h-3 text-slate-400" />
+                    <span>Admin Access</span>
+                  </button>
+                </li>
+              )}
             </ul>
           </div>
 

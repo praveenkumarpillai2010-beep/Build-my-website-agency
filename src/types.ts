@@ -133,6 +133,100 @@ export interface CustomWebsiteQuoteForm {
   message: string;
 }
 
+export interface RealWebsite {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  price: number; // In USD
+  currency: string; // 'USD'
+  liveUrl: string; // The real live website URL entered by admin
+  thumbnailUrl: string; // Website thumbnail/preview image
+  screenshots?: string[]; // Optional screenshots
+  features?: string[];
+  featured: boolean;
+  published: boolean;
+  displayOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type OrderStatus =
+  | 'Payment Pending'
+  | 'Payment Confirmed'
+  | 'Requirements Needed'
+  | 'In Progress'
+  | 'Preview Ready'
+  | 'Completed'
+  | 'Cancelled';
+
+export type PaymentStatus = 'Pending' | 'Paid' | 'Failed' | 'Refunded';
+
+export interface CustomerRequirements {
+  businessName: string;
+  logoUrl?: string;
+  businessDescription: string;
+  phone: string;
+  email: string;
+  address?: string;
+  whatsapp?: string;
+  socialLinks?: string;
+  services?: string;
+  aboutBusiness?: string;
+  uploadedImages?: string[];
+  specialRequirements?: string;
+  submittedAt?: string;
+}
+
+export interface Order {
+  id: string; // e.g. 'BMW-1024'
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  businessName?: string;
+  websiteId?: string;
+  websiteName: string;
+  amount: number;
+  currency: string; // 'USD'
+  paymentStatus: PaymentStatus;
+  paymentProvider?: 'stripe' | 'paypal' | 'verified_gateway';
+  paymentTransactionId?: string;
+  orderStatus: OrderStatus;
+  createdAt: string;
+  updatedAt: string;
+  requirements?: CustomerRequirements;
+  adminNotes?: string;
+  previewUrl?: string;
+}
+
+export interface RealTestimonial {
+  id: string;
+  clientName: string;
+  clientRole: string;
+  companyName: string;
+  rating: number;
+  reviewText: string;
+  websiteUrl?: string;
+  date: string;
+}
+
+export interface AgencySettings {
+  agencyName: string;
+  whatsappNumber: string;
+  displayPhone: string;
+  email: string;
+  showStats: boolean;
+  statsWebsitesCount?: string;
+  statsClientsCount?: string;
+  statsSupportAvailability?: string;
+  statsDeliverySpeed?: string;
+  stripeEnabled: boolean;
+  stripePublishableKey?: string;
+  paypalEnabled: boolean;
+  paypalClientId?: string;
+  testimonials: RealTestimonial[];
+}
+
 export interface AIWebsiteConcept {
   userQuery: string;
   websiteHeadline: string;

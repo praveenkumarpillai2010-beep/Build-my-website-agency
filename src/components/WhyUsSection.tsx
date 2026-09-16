@@ -1,6 +1,8 @@
-import React from 'react';
-import { Sparkles, Smartphone, Zap, Search, TrendingUp, Headphones, CheckCircle2 } from 'lucide-react';
-import { AGENCY_STATS, AGENCY_BENEFITS } from '../data/agencyData';
+import React, { useState, useEffect } from 'react';
+import { Sparkles, Smartphone, Zap, Search, TrendingUp, Headphones, CheckCircle2, Shield } from 'lucide-react';
+import { AGENCY_BENEFITS } from '../data/agencyData';
+import { fetchSettings } from '../services/agencyApi';
+import { AgencySettings } from '../types';
 
 const BENEFIT_ICONS: Record<string, React.ReactNode> = {
   Sparkles: <Sparkles className="w-5 h-5 text-blue-400" />,
@@ -12,6 +14,12 @@ const BENEFIT_ICONS: Record<string, React.ReactNode> = {
 };
 
 export const WhyUsSection: React.FC = () => {
+  const [settings, setSettings] = useState<AgencySettings | null>(null);
+
+  useEffect(() => {
+    fetchSettings().then(setSettings).catch(() => {});
+  }, []);
+
   return (
     <section id="why-us" className="py-20 md:py-32 bg-[#090d16] relative overflow-hidden">
       {/* Ambient background glow */}
@@ -21,6 +29,7 @@ export const WhyUsSection: React.FC = () => {
         {/* Section Header */}
         <div className="text-center max-w-3xl mx-auto mb-16 sm:mb-20">
           <div className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-white/[0.04] border border-white/10 text-xs font-semibold text-blue-300 uppercase tracking-wider mb-3">
+            <Shield className="w-3.5 h-3.5 text-blue-400" />
             <span>The Agency Advantage</span>
           </div>
 
@@ -33,50 +42,56 @@ export const WhyUsSection: React.FC = () => {
           </p>
         </div>
 
-        {/* Animated Statistics Strip (Editable Placeholder Metrics) */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 sm:gap-6 mb-16 sm:mb-24">
-          <div className="p-6 sm:p-8 rounded-3xl bg-[#0d121f]/90 border border-white/10 text-center hover:border-blue-500/40 transition-all hover:-translate-y-1">
-            <div className="text-3xl sm:text-5xl font-black text-white font-display mb-1 bg-gradient-to-r from-blue-400 to-indigo-300 bg-clip-text text-transparent">
-              {AGENCY_STATS.websitesCount}
-            </div>
-            <div className="text-xs sm:text-sm font-semibold text-slate-300">
-              {AGENCY_STATS.websitesLabel}
-            </div>
-            <div className="text-[10px] text-slate-500 mt-1">Across 12+ industries</div>
-          </div>
+        {/* Optional Verified Real Statistics Strip (Only displayed if verified in Admin Settings) */}
+        {settings?.showStats && (settings?.statsWebsitesCount || settings?.statsClientsCount) && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 sm:gap-6 mb-16 sm:mb-24">
+            {settings.statsWebsitesCount && (
+              <div className="p-6 sm:p-8 rounded-3xl bg-[#0d121f]/90 border border-white/10 text-center hover:border-blue-500/40 transition-all hover:-translate-y-1">
+                <div className="text-3xl sm:text-5xl font-black text-white font-display mb-1 bg-gradient-to-r from-blue-400 to-indigo-300 bg-clip-text text-transparent">
+                  {settings.statsWebsitesCount}
+                </div>
+                <div className="text-xs sm:text-sm font-semibold text-slate-300">
+                  Websites Built
+                </div>
+                <div className="text-[10px] text-slate-500 mt-1">Verified client deliverables</div>
+              </div>
+            )}
 
-          <div className="p-6 sm:p-8 rounded-3xl bg-[#0d121f]/90 border border-white/10 text-center hover:border-purple-500/40 transition-all hover:-translate-y-1">
-            <div className="text-3xl sm:text-5xl font-black text-white font-display mb-1 bg-gradient-to-r from-purple-400 to-pink-300 bg-clip-text text-transparent">
-              {AGENCY_STATS.clientsCount}
-            </div>
-            <div className="text-xs sm:text-sm font-semibold text-slate-300">
-              {AGENCY_STATS.clientsLabel}
-            </div>
-            <div className="text-[10px] text-slate-500 mt-1">Founders & businesses</div>
-          </div>
+            {settings.statsClientsCount && (
+              <div className="p-6 sm:p-8 rounded-3xl bg-[#0d121f]/90 border border-white/10 text-center hover:border-purple-500/40 transition-all hover:-translate-y-1">
+                <div className="text-3xl sm:text-5xl font-black text-white font-display mb-1 bg-gradient-to-r from-purple-400 to-pink-300 bg-clip-text text-transparent">
+                  {settings.statsClientsCount}
+                </div>
+                <div className="text-xs sm:text-sm font-semibold text-slate-300">
+                  Clients Served
+                </div>
+                <div className="text-[10px] text-slate-500 mt-1">Founders & businesses</div>
+              </div>
+            )}
 
-          <div className="p-6 sm:p-8 rounded-3xl bg-[#0d121f]/90 border border-white/10 text-center hover:border-emerald-500/40 transition-all hover:-translate-y-1">
-            <div className="text-3xl sm:text-5xl font-black text-white font-display mb-1 bg-gradient-to-r from-emerald-400 to-teal-300 bg-clip-text text-transparent">
-              {AGENCY_STATS.supportAvailability}
+            <div className="p-6 sm:p-8 rounded-3xl bg-[#0d121f]/90 border border-white/10 text-center hover:border-emerald-500/40 transition-all hover:-translate-y-1">
+              <div className="text-3xl sm:text-5xl font-black text-emerald-400 font-display mb-1">
+                Direct
+              </div>
+              <div className="text-xs sm:text-sm font-semibold text-slate-300">
+                WhatsApp Support
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">Chat directly with developers</div>
             </div>
-            <div className="text-xs sm:text-sm font-semibold text-slate-300">
-              {AGENCY_STATS.supportLabel}
-            </div>
-            <div className="text-[10px] text-slate-500 mt-1">Direct WhatsApp channel</div>
-          </div>
 
-          <div className="p-6 sm:p-8 rounded-3xl bg-[#0d121f]/90 border border-white/10 text-center hover:border-amber-500/40 transition-all hover:-translate-y-1">
-            <div className="text-3xl sm:text-5xl font-black text-white font-display mb-1 bg-gradient-to-r from-amber-400 to-orange-300 bg-clip-text text-transparent">
-              {AGENCY_STATS.deliverySpeed}
+            <div className="p-6 sm:p-8 rounded-3xl bg-[#0d121f]/90 border border-white/10 text-center hover:border-amber-500/40 transition-all hover:-translate-y-1">
+              <div className="text-3xl sm:text-5xl font-black text-amber-400 font-display mb-1">
+                48h - 7d
+              </div>
+              <div className="text-xs sm:text-sm font-semibold text-slate-300">
+                Fast Turnaround
+              </div>
+              <div className="text-[10px] text-slate-500 mt-1">Agile launch timelines</div>
             </div>
-            <div className="text-xs sm:text-sm font-semibold text-slate-300">
-              {AGENCY_STATS.deliveryLabel}
-            </div>
-            <div className="text-[10px] text-slate-500 mt-1">Guaranteed milestone delivery</div>
           </div>
-        </div>
+        )}
 
-        {/* 6 Key Benefits Cards */}
+        {/* 6 Core Agency Benefits */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8">
           {AGENCY_BENEFITS.map((benefit, idx) => (
             <div
@@ -99,7 +114,7 @@ export const WhyUsSection: React.FC = () => {
 
               <div className="pt-6 mt-6 border-t border-white/5 flex items-center gap-2 text-xs font-semibold text-blue-400">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                <span>Standard across all projects</span>
+                <span>Engineered for conversion</span>
               </div>
             </div>
           ))}

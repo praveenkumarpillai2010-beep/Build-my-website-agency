@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Menu, X, ArrowUpRight, Sparkles, MessageCircle, User, ShieldCheck, Lock } from 'lucide-react';
 import { AGENCY_CONFIG, getWhatsAppUrl } from '../data/agencyData';
+import { useAuth } from '../context/AuthContext';
 
 interface NavbarProps {
   onOpenCustomQuote: () => void;
@@ -17,6 +18,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { user } = useAuth();
 
   useEffect(() => {
     const handleScroll = () => {
@@ -103,11 +105,19 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Client Portal Button */}
           <button
             onClick={onOpenCustomerDashboard}
-            className="px-3 py-2 text-xs sm:text-sm font-semibold text-slate-200 hover:text-white bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+            className={`px-3 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer ${
+              user
+                ? 'text-blue-200 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30'
+                : 'text-slate-200 hover:text-white bg-white/[0.05] hover:bg-white/[0.1] border border-white/10'
+            }`}
             title="Client Portal & Order Tracking"
           >
-            <User className="w-3.5 h-3.5 text-blue-400" />
-            <span>Client Portal</span>
+            {user?.photoURL ? (
+              <img src={user.photoURL} alt="User" className="w-4 h-4 rounded-full" />
+            ) : (
+              <User className="w-3.5 h-3.5 text-blue-400" />
+            )}
+            <span>{user ? user.displayName?.split(' ')[0] || 'My Orders' : 'Client Portal'}</span>
           </button>
 
           {/* Admin Dashboard Quick Access Button */}

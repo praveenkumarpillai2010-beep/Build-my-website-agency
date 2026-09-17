@@ -3,6 +3,7 @@ import { X, ShieldCheck, Lock, CreditCard, ArrowRight, CheckCircle, Sparkles, Me
 import { RealWebsite, Order } from '../types';
 import { createCheckoutSession, verifyPayment, fetchSettings } from '../services/agencyApi';
 import { getWhatsAppUrl } from '../data/agencyData';
+import { useAuth } from '../context/AuthContext';
 
 interface CheckoutModalProps {
   website?: RealWebsite | null;
@@ -21,6 +22,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   onSuccess,
   onOpenRequirements,
 }) => {
+  const { user } = useAuth();
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
@@ -36,6 +38,13 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   const websiteName = website ? website.name : customPackageName || 'Custom Website Development';
   const amount = website ? website.price : customAmount || 199;
   const currency = website?.currency || 'USD';
+
+  useEffect(() => {
+    if (user) {
+      if (user.displayName && !customerName) setCustomerName(user.displayName);
+      if (user.email && !customerEmail) setCustomerEmail(user.email);
+    }
+  }, [user]);
 
   useEffect(() => {
     fetchSettings().then((s) => {

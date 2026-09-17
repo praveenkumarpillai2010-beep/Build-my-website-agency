@@ -251,5 +251,6 @@ export interface AIWebsiteConcept {
     page: string;
     purpose: string;
   }[];
+  marketInsights?: string;
   generatedAt: string;
 }

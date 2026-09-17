@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Sparkles, ArrowRight, Wand2, RefreshCw, Layers, Palette, Layout, CheckCircle2, MessageCircle, Copy, Check } from 'lucide-react';
+import { Sparkles, ArrowRight, Wand2, RefreshCw, Layers, Palette, Layout, CheckCircle2, MessageCircle, Copy, Check, Globe } from 'lucide-react';
 import { AIWebsiteConcept } from '../types';
 import { generateWebsiteConcept } from '../services/aiConceptService';
 import { AGENCY_CONFIG, getWhatsAppUrl } from '../data/agencyData';
@@ -190,6 +190,20 @@ I would like your team to build this concept into a live website!`;
               <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
                 {concept.subheadline}
               </p>
+
+              {concept.marketInsights && (
+                <div className="mt-4 pt-4 border-t border-white/10 flex items-start gap-2.5 bg-blue-500/10 p-3.5 rounded-xl border border-blue-500/20">
+                  <Globe className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-blue-300 block mb-0.5">
+                      Search-Grounded Market Intelligence
+                    </span>
+                    <p className="text-xs text-slate-200">
+                      {concept.marketInsights}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* 2. Suggested Design Style & Color Palette */}

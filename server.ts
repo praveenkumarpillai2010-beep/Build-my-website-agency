@@ -5,8 +5,33 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import Stripe from 'stripe';
 import dotenv from 'dotenv';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import {
+  getFirestore,
+  collection,
+  doc,
+  getDocs,
+  getDoc,
+  setDoc,
+  deleteDoc,
+  Firestore,
+} from 'firebase/firestore';
 
 dotenv.config();
+
+// Initialize Firebase client in server
+let firestoreDb: Firestore | null = null;
+try {
+  const cfgPath = path.join(process.cwd(), 'firebase-applet-config.json');
+  if (fs.existsSync(cfgPath)) {
+    const firebaseConfig = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+    const fbApp = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+    firestoreDb = getFirestore(fbApp, firebaseConfig.firestoreDatabaseId || undefined);
+    console.log('Server successfully initialized Firestore connection');
+  }
+} catch (fbErr) {
+  console.warn('Firestore initialization notice:', fbErr);
+}
 
 // Ensure data directory exists
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -85,6 +110,72 @@ function readDb(): DatabaseSchema {
   }
 }
 
+// Background sync to Firestore for durable persistence across Cloud Run restarts
+async function syncToFirestore(collectionName: string, docId: string, data: any) {
+  if (!firestoreDb) return;
+  try {
+    const docRef = doc(firestoreDb, collectionName, docId);
+    await setDoc(docRef, data, { merge: true });
+  } catch (err) {
+    console.warn(`Firestore sync (${collectionName}/${docId}) error:`, err);
+  }
+}
+
+async function deleteFromFirestore(collectionName: string, docId: string) {
+  if (!firestoreDb) return;
+  try {
+    const docRef = doc(firestoreDb, collectionName, docId);
+    await deleteDoc(docRef);
+  } catch (err) {
+    console.warn(`Firestore delete (${collectionName}/${docId}) error:`, err);
+  }
+}
+
+// Load existing data from Firestore on server startup
+async function loadFromFirestore(): Promise<void> {
+  if (!firestoreDb) return;
+  try {
+    const current = readDb();
+    let modified = false;
+
+    // Load websites
+    const wsSnap = await getDocs(collection(firestoreDb, 'websites'));
+    if (!wsSnap.empty) {
+      const fsWebsites: any[] = [];
+      wsSnap.forEach((d) => fsWebsites.push(d.data()));
+      if (fsWebsites.length > 0) {
+        current.websites = fsWebsites;
+        modified = true;
+      }
+    }
+
+    // Load orders
+    const ordersSnap = await getDocs(collection(firestoreDb, 'orders'));
+    if (!ordersSnap.empty) {
+      const fsOrders: any[] = [];
+      ordersSnap.forEach((d) => fsOrders.push(d.data()));
+      if (fsOrders.length > 0) {
+        current.orders = fsOrders;
+        modified = true;
+      }
+    }
+
+    // Load settings
+    const settingDoc = await getDoc(doc(firestoreDb, 'settings', 'agency'));
+    if (settingDoc.exists()) {
+      current.settings = { ...current.settings, ...settingDoc.data() };
+      modified = true;
+    }
+
+    if (modified) {
+      fs.writeFileSync(DB_FILE, JSON.stringify(current, null, 2), 'utf-8');
+      console.log('Successfully hydrated application state from Firestore cloud database');
+    }
+  } catch (err) {
+    console.warn('Could not hydrate from Firestore at startup:', err);
+  }
+}
+
 function writeDb(data: DatabaseSchema) {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
@@ -123,6 +214,9 @@ function requireAdmin(req: Request, res: Response, next: NextFunction) {
 }
 
 async function startServer() {
+  // Hydrate data from Firestore cloud database
+  await loadFromFirestore();
+
   const app = express();
   const PORT = 3000;
 
@@ -289,6 +383,7 @@ async function startServer() {
 
     db.websites.push(newWebsite);
     writeDb(db);
+    syncToFirestore('websites', newWebsite.id, newWebsite);
 
     res.status(201).json(newWebsite);
   });
@@ -344,6 +439,7 @@ async function startServer() {
 
     db.websites[index] = updated;
     writeDb(db);
+    syncToFirestore('websites', updated.id, updated);
 
     res.json(updated);
   });
@@ -356,6 +452,7 @@ async function startServer() {
     }
     db.websites = filtered;
     writeDb(db);
+    deleteFromFirestore('websites', req.params.id);
     res.json({ success: true, message: 'Website deleted' });
   });
 
@@ -464,6 +561,7 @@ async function startServer() {
 
       db.orders.unshift(newOrder);
       writeDb(db);
+      syncToFirestore('orders', newOrder.id, newOrder);
 
       // Check for real Stripe configuration
       const stripe = getStripe();
@@ -557,6 +655,7 @@ async function startServer() {
           order.paymentTransactionId = session.payment_intent as string || session.id;
           order.updatedAt = new Date().toISOString();
           writeDb(db);
+          syncToFirestore('orders', order.id, order);
           return res.json({ verified: true, order });
         } else {
           return res.status(400).json({
@@ -575,6 +674,7 @@ async function startServer() {
           order.paymentTransactionId = intent.id;
           order.updatedAt = new Date().toISOString();
           writeDb(db);
+          syncToFirestore('orders', order.id, order);
           return res.json({ verified: true, order });
         } else {
           return res.status(400).json({
@@ -591,6 +691,7 @@ async function startServer() {
         order.paymentTransactionId = transactionToken;
         order.updatedAt = new Date().toISOString();
         writeDb(db);
+        syncToFirestore('orders', order.id, order);
         return res.json({ verified: true, order });
       }
 
@@ -646,6 +747,7 @@ async function startServer() {
     order.updatedAt = new Date().toISOString();
 
     writeDb(db);
+    syncToFirestore('orders', order.id, order);
     res.json(order);
   });
 
@@ -697,6 +799,7 @@ async function startServer() {
 
     order.updatedAt = new Date().toISOString();
     writeDb(db);
+    syncToFirestore('orders', order.id, order);
 
     res.json({ success: true, order });
   });
@@ -750,11 +853,12 @@ async function startServer() {
     };
 
     writeDb(db);
+    syncToFirestore('settings', 'agency', db.settings);
     res.json({ success: true, settings: db.settings });
   });
 
   // -------------------------------------------------------------------------
-  // 6. GEMINI AI CONCEPT STUDIO PROXY (SERVER-SIDE)
+  // 6. GEMINI AI CONCEPT STUDIO PROXY (WITH SEARCH GROUNDING)
   // -------------------------------------------------------------------------
   app.post('/api/ai/concept', async (req, res) => {
     try {
@@ -770,12 +874,13 @@ async function startServer() {
 
       const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: `You are an elite digital web agency creative director. Create a structured website architecture proposal for this business request: "${prompt}".
+        model: 'gemini-3.5-flash',
+        contents: `You are an elite digital web agency creative director. Research the latest market trends, top competitors, best website conversion structures, and contemporary color psychology for this business inquiry using Google Search: "${prompt}".
+Create a tailored, high-converting website architecture proposal.
 Respond with valid JSON only matching this format:
 {
   "websiteHeadline": "Catchy Hero Headline",
-  "subheadline": "Persuasive 1-2 sentence subtitle",
+  "subheadline": "Persuasive 1-2 sentence subtitle grounded in market best-practices",
   "suggestedStyle": "E.g. Minimalist Dark Luxury / Modern Glassmorphic",
   "typographyArchetype": "E.g. Plus Jakarta Sans + Playfair Display",
   "colorPalette": {
@@ -795,8 +900,12 @@ Respond with valid JSON only matching this format:
   "suggestedStructure": [
     { "page": "Home", "purpose": "Convert traffic" },
     { "page": "Services", "purpose": "Detail offerings" }
-  ]
+  ],
+  "marketInsights": "Up-to-date competitive trend or customer expectation insight from search data"
 }`,
+        config: {
+          tools: [{ googleSearch: {} }],
+        },
       });
 
       const text = response.text || '';

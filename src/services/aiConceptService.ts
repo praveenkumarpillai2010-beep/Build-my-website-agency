@@ -252,8 +252,53 @@ export async function generateWebsiteConcept(userInput: string): Promise<AIWebsi
   const query = userInput.trim();
   const lower = query.toLowerCase();
 
-  // Simulate short realistic network AI inference delay
-  await new Promise((resolve) => setTimeout(resolve, 850));
+  // Try calling the server-side Gemini 3.5 Flash Search-Grounded endpoint
+  try {
+    const res = await fetch('/api/ai/concept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: query }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.websiteHeadline) {
+        return {
+          userQuery: query,
+          websiteHeadline: data.websiteHeadline,
+          subheadline: data.subheadline || 'Custom engineered for high conversions and market authority.',
+          suggestedStyle: data.suggestedStyle || 'Modern High-Contrast Minimalist',
+          typographyArchetype: data.typographyArchetype || 'Space Grotesk + Plus Jakarta Sans',
+          colorPalette: data.colorPalette || {
+            name: 'Modern Agency Obsidian',
+            primary: '#0F172A',
+            secondary: '#3B82F6',
+            accent: '#8B5CF6',
+            background: '#07090E',
+          },
+          recommendedSections: Array.isArray(data.recommendedSections) ? data.recommendedSections : ['Hero', 'Features', 'Live Portfolio', 'Pricing', 'Contact'],
+          features: Array.isArray(data.features) ? data.features : ['Mobile-First Speed', 'WhatsApp Integration', 'Lead Funnel', 'SEO Schema'],
+          callToAction: data.callToAction || {
+            primary: 'Book Strategy Consultation →',
+            secondary: 'Chat on WhatsApp',
+            strategy: 'Direct high-intent customer inquiry funnel.',
+          },
+          suggestedStructure: Array.isArray(data.suggestedStructure) ? data.suggestedStructure : [
+            { page: 'Home', purpose: 'Convert visitors into qualified leads' },
+            { page: 'Services', purpose: 'Detail specialized service offerings' },
+            { page: 'Contact', purpose: 'Direct contact with WhatsApp priority link' },
+          ],
+          marketInsights: data.marketInsights,
+          generatedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        };
+      }
+    }
+  } catch (apiErr) {
+    console.warn('Server AI endpoint unavailable, using built-in high-converting industry blueprints:', apiErr);
+  }
+
+  // Fallback to rich built-in industry templates
+  await new Promise((resolve) => setTimeout(resolve, 600));
 
   // Check matching domain
   let matched = PRESET_DOMAINS.find((preset) =>

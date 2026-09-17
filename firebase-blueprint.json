@@ -1,0 +1,87 @@
+{
+  "entities": {
+    "website": {
+      "title": "Website",
+      "description": "Real website published by the agency in the catalog",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Title of the website" },
+        "category": { "type": "string", "description": "Industry category" },
+        "price": { "type": "number", "description": "USD price" },
+        "previewImage": { "type": "string", "description": "Preview image URL" },
+        "liveUrl": { "type": "string", "description": "Exact live URL" },
+        "isPublished": { "type": "boolean", "description": "Published visibility" },
+        "isFeatured": { "type": "boolean", "description": "Featured status" },
+        "order": { "type": "number", "description": "Sort order" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" }
+      },
+      "required": ["title", "category", "price", "previewImage", "liveUrl", "isPublished", "createdAt"]
+    },
+    "order": {
+      "title": "Order",
+      "description": "Customer purchase order for a website",
+      "type": "object",
+      "properties": {
+        "order_id": { "type": "string", "description": "Order identifier" },
+        "customer_id": { "type": "string", "description": "Customer identifier" },
+        "customer_name": { "type": "string", "description": "Customer name" },
+        "customer_email": { "type": "string", "description": "Customer email" },
+        "customer_phone": { "type": "string", "description": "Customer phone" },
+        "website_id": { "type": "string", "description": "ID of website" },
+        "website_name": { "type": "string", "description": "Name of website" },
+        "amount": { "type": "number", "description": "Amount in USD" },
+        "currency": { "type": "string", "description": "Currency" },
+        "payment_status": { "type": "string", "description": "Payment status" },
+        "project_status": { "type": "string", "description": "Project status" },
+        "preview_url": { "type": "string", "description": "Preview URL" },
+        "final_url": { "type": "string", "description": "Final live URL" },
+        "created_at": { "type": "string", "description": "Created at timestamp" }
+      },
+      "required": ["order_id", "customer_name", "customer_email", "website_name", "amount", "payment_status", "project_status", "created_at"]
+    },
+    "customer": {
+      "title": "Customer",
+      "description": "Registered customer profile",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "description": "Customer email" },
+        "name": { "type": "string", "description": "Customer name" },
+        "phone": { "type": "string", "description": "Customer phone" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" }
+      },
+      "required": ["email", "name", "createdAt"]
+    },
+    "setting": {
+      "title": "Setting",
+      "description": "Agency settings and contact configuration",
+      "type": "object",
+      "properties": {
+        "agencyName": { "type": "string", "description": "Agency business name" },
+        "whatsappNumber": { "type": "string", "description": "WhatsApp number" },
+        "displayPhone": { "type": "string", "description": "Display phone number" },
+        "email": { "type": "string", "description": "Contact email" },
+        "showStats": { "type": "boolean", "description": "Display stats toggle" },
+        "stripeEnabled": { "type": "boolean", "description": "Stripe enabled flag" }
+      },
+      "required": ["agencyName", "whatsappNumber", "email"]
+    }
+  },
+  "firestore": {
+    "/websites/{websiteId}": {
+      "schema": "website",
+      "description": "Collection of published real agency websites"
+    },
+    "/orders/{orderId}": {
+      "schema": "order",
+      "description": "Collection of customer purchase orders"
+    },
+    "/customers/{customerId}": {
+      "schema": "customer",
+      "description": "Collection of customers"
+    },
+    "/settings/{settingId}": {
+      "schema": "setting",
+      "description": "Agency configuration document"
+    }
+  }
+}

@@ -102,6 +102,25 @@
         "details": { "type": "object", "description": "Additional context metadata" }
       },
       "required": ["adminUid", "action", "resourceType", "resourceId", "timestamp"]
+    },
+    "admin_notification": {
+      "title": "AdminNotification",
+      "description": "Real-time alert notification for agency administrators on orders and requirements",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Notification unique ID" },
+        "type": { "type": "string", "description": "Notification type (new_order, requirements_submitted)" },
+        "title": { "type": "string", "description": "Alert title" },
+        "message": { "type": "string", "description": "Detailed alert message" },
+        "orderId": { "type": "string", "description": "Associated order identifier" },
+        "customerName": { "type": "string", "description": "Customer name" },
+        "customerEmail": { "type": "string", "description": "Customer email" },
+        "websiteName": { "type": "string", "description": "Purchased website name" },
+        "amount": { "type": "number", "description": "Order amount" },
+        "timestamp": { "type": "string", "description": "Creation timestamp ISO" },
+        "read": { "type": "boolean", "description": "Read status" }
+      },
+      "required": ["id", "type", "title", "message", "orderId", "timestamp", "read"]
     }
   },
   "firestore": {
@@ -128,6 +147,10 @@
     "/audit_logs/{logId}": {
       "schema": "audit_log",
       "description": "Audit log entries for administrative operations"
+    },
+    "/admin_notifications/{notificationId}": {
+      "schema": "admin_notification",
+      "description": "Real-time administrative alerts for new orders and submitted requirements"
     }
   }
 }

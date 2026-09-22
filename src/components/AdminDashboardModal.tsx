@@ -14,6 +14,8 @@ import {
   fetchAdminUsers, grantAdminUser, revokeAdminUser, fetchAuditLogs
 } from '../services/agencyApi';
 import { useAuth } from '../context/AuthContext';
+import { useAdminNotifications } from '../context/AdminNotificationContext';
+import { AdminNotificationBell } from './AdminNotificationBell';
 import { AdminCommandCenter } from './AdminCommandCenter';
 import { AdminBookedCalls } from './AdminBookedCalls';
 
@@ -62,11 +64,44 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
 
   // Security & Admin Management State
   const { user, isAdmin, getIdToken, signInWithGoogle, logout: authLogout } = useAuth();
+  const {
+    unreadCount,
+    unreadOrderCount,
+    unreadRequirementsCount,
+    notifications,
+    targetOrderToFocus,
+    clearTargetOrderToFocus,
+  } = useAdminNotifications();
+
+  // Orders search & filter
+  const [orderSearchQuery, setOrderSearchQuery] = useState('');
+  const [orderFilterStatus, setOrderFilterStatus] = useState<string>('all');
+  const [highlightedOrderId, setHighlightedOrderId] = useState<string | null>(null);
+
   const [adminsList, setAdminsList] = useState<any[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [newAdminEmail, setNewAdminEmail] = useState('');
   const [securityActionLoading, setSecurityActionLoading] = useState(false);
   const [auditFilterAction, setAuditFilterAction] = useState('all');
+
+  const handleSelectOrderFromNotification = (orderId: string, openRequirements = false) => {
+    setActiveTab('orders');
+    setOrderSearchQuery(orderId);
+    setHighlightedOrderId(orderId);
+    setTimeout(() => {
+      const el = document.getElementById(`order-card-${orderId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 150);
+  };
+
+  useEffect(() => {
+    if (targetOrderToFocus) {
+      handleSelectOrderFromNotification(targetOrderToFocus.orderId, targetOrderToFocus.openRequirements);
+      clearTargetOrderToFocus();
+    }
+  }, [targetOrderToFocus]);
 
   // Auto-authenticate with Firebase ID token if user is recognized as server admin
   useEffect(() => {
@@ -557,6 +592,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
           <div className="flex items-center gap-2">
             {adminToken && (
               <>
+                <AdminNotificationBell onSelectOrder={handleSelectOrderFromNotification} />
                 <button
                   onClick={() => loadAllData(adminToken)}
                   className="p-2 rounded-xl text-slate-400 hover:text-white bg-white/[0.04] hover:bg-white/10 transition-colors"
@@ -716,9 +752,22 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                   <ShoppingBag className="w-4 h-4" />
                   <span>Orders</span>
                 </div>
-                <span className="px-2 py-0.5 rounded-full text-[10px] bg-white/15 text-white font-mono">
-                  {orders.length}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  {unreadCount > 0 && (
+                    <span className="flex items-center gap-1">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-red-500 text-white shadow-sm shadow-red-500/50">
+                        {unreadCount}
+                      </span>
+                    </span>
+                  )}
+                  <span className="px-2 py-0.5 rounded-full text-[10px] bg-white/15 text-white font-mono">
+                    {orders.length}
+                  </span>
+                </div>
               </button>
 
               <button
@@ -1648,9 +1697,66 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
               {/* TAB 3: ORDERS MANAGEMENT */}
               {activeTab === 'orders' && (
                 <div className="space-y-6">
-                  <div>
-                    <h3 className="text-xl font-bold text-white">Client Orders & Project Tracker</h3>
-                    <p className="text-xs sm:text-sm text-slate-400">Inspect client orders, review submitted assets, update milestones, and manage staging links.</p>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                      <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                        <ShoppingBag className="w-5 h-5 text-blue-400" />
+                        <span>Client Orders & Project Tracker</span>
+                        {unreadOrderCount > 0 && (
+                          <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-red-500/20 text-red-300 border border-red-500/30">
+                            {unreadOrderCount} new
+                          </span>
+                        )}
+                      </h3>
+                      <p className="text-xs sm:text-sm text-slate-400">
+                        Inspect client orders, review submitted customer requirements, update project status, and manage preview links.
+                      </p>
+                    </div>
+
+                    {orderSearchQuery && (
+                      <button
+                        onClick={() => {
+                          setOrderSearchQuery('');
+                          setHighlightedOrderId(null);
+                        }}
+                        className="px-3 py-1.5 rounded-xl text-xs text-slate-300 hover:text-white bg-white/[0.05] hover:bg-white/10 border border-white/10 transition-colors self-start sm:self-auto flex items-center gap-1.5"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        <span>Clear Filter ({orderSearchQuery})</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Orders Search & Filter Bar */}
+                  <div className="p-3.5 rounded-2xl bg-white/[0.02] border border-white/10 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                    <div className="relative flex-1">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        placeholder="Search orders by Order #, customer name, email, or website..."
+                        value={orderSearchQuery}
+                        onChange={(e) => setOrderSearchQuery(e.target.value)}
+                        className="w-full pl-9 pr-4 py-2 rounded-xl bg-white/[0.04] border border-white/10 text-xs sm:text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Filter className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <select
+                        value={orderFilterStatus}
+                        onChange={(e) => setOrderFilterStatus(e.target.value)}
+                        className="px-3 py-2 rounded-xl bg-white/[0.04] border border-white/10 text-xs text-white focus:outline-none focus:border-blue-500"
+                      >
+                        <option value="all" className="bg-[#0e1322]">All Statuses ({orders.length})</option>
+                        <option value="with_requirements" className="bg-[#0e1322]">Requirements Submitted ({orders.filter(o => o.requirements?.submittedAt).length})</option>
+                        <option value="needs_requirements" className="bg-[#0e1322]">Requirements Pending ({orders.filter(o => !o.requirements?.submittedAt).length})</option>
+                        <option value="Payment Confirmed" className="bg-[#0e1322]">Payment Confirmed</option>
+                        <option value="Requirements Received" className="bg-[#0e1322]">Requirements Received</option>
+                        <option value="In Progress" className="bg-[#0e1322]">In Progress</option>
+                        <option value="Preview Ready" className="bg-[#0e1322]">Preview Ready</option>
+                        <option value="Completed" className="bg-[#0e1322]">Completed</option>
+                      </select>
+                    </div>
                   </div>
 
                   {orders.length === 0 ? (
@@ -1661,29 +1767,75 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                     </div>
                   ) : (
                     <div className="space-y-4">
-                      {orders.map((ord) => (
-                        <div
-                          key={ord.id}
-                          className="p-5 rounded-2xl bg-white/[0.02] border border-white/10 hover:border-white/20 transition-all space-y-4"
-                        >
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/10">
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <span className="font-mono text-sm font-bold text-white">#{ord.id}</span>
-                                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                                  {ord.paymentStatus} (${ord.amount} {ord.currency})
-                                </span>
-                                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/15 text-blue-300 border border-blue-500/30">
-                                  {ord.orderStatus}
-                                </span>
-                              </div>
-                              <h4 className="text-base font-bold text-white mt-1">{ord.websiteName}</h4>
-                            </div>
+                      {orders
+                        .filter((ord) => {
+                          const q = orderSearchQuery.toLowerCase().trim();
+                          const matchesSearch =
+                            !q ||
+                            ord.id.toLowerCase().includes(q) ||
+                            ord.customerName.toLowerCase().includes(q) ||
+                            ord.customerEmail.toLowerCase().includes(q) ||
+                            ord.websiteName.toLowerCase().includes(q) ||
+                            Boolean(ord.businessName && ord.businessName.toLowerCase().includes(q));
 
-                            <div className="text-xs text-slate-400">
-                              Ordered {new Date(ord.createdAt).toLocaleDateString()}
-                            </div>
-                          </div>
+                          const matchesStatus =
+                            orderFilterStatus === 'all' ||
+                            (orderFilterStatus === 'with_requirements' && Boolean(ord.requirements?.submittedAt)) ||
+                            (orderFilterStatus === 'needs_requirements' && !ord.requirements?.submittedAt) ||
+                            ord.orderStatus === orderFilterStatus;
+
+                          return matchesSearch && matchesStatus;
+                        })
+                        .map((ord) => {
+                          const orderNotifs = notifications.filter((n) => n.orderId === ord.id && !n.read);
+                          const hasUnreadAlert = orderNotifs.length > 0;
+                          const isHighlighted = highlightedOrderId === ord.id;
+
+                          return (
+                            <div
+                              key={ord.id}
+                              id={`order-card-${ord.id}`}
+                              className={`p-5 rounded-2xl transition-all space-y-4 ${
+                                isHighlighted
+                                  ? 'bg-blue-500/[0.08] border-2 border-blue-500 shadow-xl shadow-blue-500/20'
+                                  : hasUnreadAlert
+                                  ? 'bg-white/[0.03] border-2 border-red-500/50 shadow-lg shadow-red-500/10'
+                                  : 'bg-white/[0.02] border border-white/10 hover:border-white/20'
+                              }`}
+                            >
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/10">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="font-mono text-sm font-bold text-white">#{ord.id}</span>
+                                    <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                      {ord.paymentStatus} (${ord.amount} {ord.currency})
+                                    </span>
+                                    <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                                      {ord.orderStatus}
+                                    </span>
+
+                                    {hasUnreadAlert && (
+                                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black uppercase tracking-wider bg-red-500 text-white shadow-md shadow-red-500/40 flex items-center gap-1.5 animate-pulse">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-white"></span>
+                                        <span>New Alert</span>
+                                      </span>
+                                    )}
+                                  </div>
+                                  <h4 className="text-base font-bold text-white mt-1">{ord.websiteName}</h4>
+                                </div>
+
+                                <div className="text-xs text-slate-400 flex items-center gap-2">
+                                  <span>Ordered {new Date(ord.createdAt).toLocaleDateString()}</span>
+                                  {isHighlighted && (
+                                    <button
+                                      onClick={() => setHighlightedOrderId(null)}
+                                      className="text-[11px] text-blue-400 hover:text-white"
+                                    >
+                                      Dismiss highlight
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
 
                           {/* Customer Details Row */}
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
@@ -1793,9 +1945,10 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
                             </div>
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                      );
+                    })}
+                  </div>
+                )}
                 </div>
               )}
 

@@ -110,6 +110,13 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------------------
+    // 9. Admin Notifications: Admin-only access for real-time alerts
+    // -------------------------------------------------------------------------
+    match /admin_notifications/{notificationId} {
+      allow read, write: if isAdmin();
+    }
+
+    // -------------------------------------------------------------------------
     // Catch-all Default Deny
     // -------------------------------------------------------------------------
     match /{document=**} {

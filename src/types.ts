@@ -270,6 +270,30 @@ export interface AuditLogEntry {
   details?: Record<string, any>;
 }
 
+export type AdminNotificationType = 'new_order' | 'requirements_submitted';
+
+export interface AdminNotification {
+  id: string;
+  type: AdminNotificationType;
+  title: string;
+  message: string;
+  orderId: string;
+  customerName: string;
+  customerEmail: string;
+  websiteName?: string;
+  amount?: number;
+  timestamp: string;
+  read: boolean;
+  priority?: 'high' | 'normal';
+  details?: {
+    requirementsSummary?: string;
+    hasLogo?: boolean;
+    hasImages?: boolean;
+    businessName?: string;
+    status?: string;
+  };
+}
+
 
 export interface RealTestimonial {
   id: string;

@@ -1,4 +1,4 @@
-import { RealWebsite, Order, CustomerRequirements, AgencySettings, OrderStatus, PaymentStatus, CallBooking, ProjectMessage } from '../types';
+import { RealWebsite, Order, CustomerRequirements, AgencySettings, OrderStatus, PaymentStatus, CallBooking, ProjectMessage, AdminNotification } from '../types';
 
 export const ADMIN_TOKEN_KEY = 'bmw_admin_token';
 export const CUSTOMER_SESSION_KEY = 'bmw_customer_session';
@@ -544,5 +544,65 @@ export async function executeAdminCommand(
     throw new Error(err.error || 'Command execution failed');
   }
   return await res.json();
+}
+
+// ---------------------------------------------------------------------------
+// ADMIN NOTIFICATIONS API (REAL-TIME ALERTS)
+// ---------------------------------------------------------------------------
+export async function fetchAdminNotifications(token: string): Promise<AdminNotification[]> {
+  try {
+    const res = await fetch('/api/admin/notifications', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error('Failed to load notifications');
+    return await res.json();
+  } catch (err) {
+    console.warn('fetchAdminNotifications notice:', err);
+    return [];
+  }
+}
+
+export async function markAdminNotificationAsRead(id: string, token: string): Promise<void> {
+  try {
+    await fetch(`/api/admin/notifications/${encodeURIComponent(id)}/read`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch (err) {
+    console.warn('markAdminNotificationAsRead notice:', err);
+  }
+}
+
+export async function markAllAdminNotificationsAsRead(token: string): Promise<void> {
+  try {
+    await fetch('/api/admin/notifications/mark-all-read', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch (err) {
+    console.warn('markAllAdminNotificationsAsRead notice:', err);
+  }
+}
+
+export async function clearAdminNotification(id: string, token: string): Promise<void> {
+  try {
+    await fetch(`/api/admin/notifications/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch (err) {
+    console.warn('clearAdminNotification notice:', err);
+  }
+}
+
+export async function clearAllAdminNotifications(token: string): Promise<void> {
+  try {
+    await fetch('/api/admin/notifications', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch (err) {
+    console.warn('clearAllAdminNotifications notice:', err);
+  }
 }
 

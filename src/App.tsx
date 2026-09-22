@@ -23,6 +23,7 @@ import { CheckoutModal } from './components/CheckoutModal';
 import { CustomerDashboardModal } from './components/CustomerDashboardModal';
 import { RequirementsModal } from './components/RequirementsModal';
 import { AdminDashboardModal } from './components/AdminDashboardModal';
+import { AdminNotificationToast } from './components/AdminNotificationBell';
 
 import { RealWebsite, Order, PricingPlan, ServiceItem, AIWebsiteConcept } from './types';
 
@@ -253,6 +254,11 @@ export default function App() {
           onDataChanged={handleDataChanged}
         />
       )}
+
+      {/* Real-Time Admin Notification Toast for instant order & requirement alerts */}
+      <AdminNotificationToast
+        onOpenAdminDashboard={() => setIsAdminDashboardOpen(true)}
+      />
     </div>
   );
 }

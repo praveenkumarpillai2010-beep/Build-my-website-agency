@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Menu, X, ArrowUpRight, Sparkles, MessageCircle, User, ShieldCheck, Lock, Terminal } from 'lucide-react';
 import { AGENCY_CONFIG, getWhatsAppUrl } from '../data/agencyData';
 import { useAuth } from '../context/AuthContext';
+import { useAdminNotifications } from '../context/AdminNotificationContext';
 
 interface NavbarProps {
   onOpenCustomQuote: () => void;
@@ -19,6 +20,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { user, isAdmin } = useAuth();
+  const { unreadCount } = useAdminNotifications();
 
   useEffect(() => {
     const handleScroll = () => {
@@ -124,16 +126,27 @@ export const Navbar: React.FC<NavbarProps> = ({
           {isAdmin ? (
             <button
               onClick={onOpenAdminDashboard}
-              className="px-3 py-1.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 border border-purple-500/30 shadow-lg shadow-purple-500/20 flex items-center gap-1.5 transition-all cursor-pointer"
-              title="Admin Command Center"
+              className="relative px-3 py-1.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 border border-purple-500/30 shadow-lg shadow-purple-500/20 flex items-center gap-1.5 transition-all cursor-pointer"
+              title={`Admin Command Center ${unreadCount > 0 ? `(${unreadCount} new alerts)` : ''}`}
             >
               <Terminal className="w-3.5 h-3.5 text-purple-200" />
               <span className="hidden md:inline">Command Center</span>
+              {unreadCount > 0 && (
+                <div className="flex items-center gap-1">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                  </span>
+                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-red-500 text-white shadow-sm shadow-red-500/50">
+                    {unreadCount}
+                  </span>
+                </div>
+              )}
             </button>
           ) : (
             <button
               onClick={onOpenAdminDashboard}
-              className="p-2 rounded-xl text-slate-400 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 transition-all cursor-pointer"
+              className="relative p-2 rounded-xl text-slate-400 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 transition-all cursor-pointer"
               title="Admin Access"
               aria-label="Admin Access"
             >
@@ -211,10 +224,15 @@ export const Navbar: React.FC<NavbarProps> = ({
                 setMobileMenuOpen(false);
                 onOpenAdminDashboard();
               }}
-              className="w-full py-2 text-center text-xs font-semibold text-slate-400 hover:text-white bg-white/[0.02] border border-white/5 rounded-xl flex items-center justify-center gap-1.5"
+              className="w-full py-2 text-center text-xs font-semibold text-slate-300 hover:text-white bg-white/[0.04] border border-white/10 rounded-xl flex items-center justify-center gap-2"
             >
-              <Lock className="w-3.5 h-3.5" />
+              {isAdmin ? <Terminal className="w-3.5 h-3.5 text-purple-400" /> : <Lock className="w-3.5 h-3.5" />}
               <span>Admin Control Center</span>
+              {unreadCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-red-500 text-white">
+                  {unreadCount} new
+                </span>
+              )}
             </button>
 
             <button

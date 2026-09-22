@@ -77,6 +77,7 @@ interface DatabaseSchema {
   messages: any[];
   bookings: any[];
   auditLogs?: any[];
+  notifications?: any[];
   settings: {
     agencyName: string;
     whatsappNumber: string;
@@ -101,6 +102,7 @@ const DEFAULT_DB: DatabaseSchema = {
   messages: [],
   bookings: [],
   auditLogs: [],
+  notifications: [],
   settings: {
     agencyName: 'BUILD MY WEBSITE',
     whatsappNumber: '15551234567',
@@ -133,6 +135,7 @@ function readDb(): DatabaseSchema {
       messages: Array.isArray(parsed.messages) ? parsed.messages : [],
       bookings: Array.isArray(parsed.bookings) ? parsed.bookings : [],
       auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
+      notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
       settings: { ...DEFAULT_DB.settings, ...(parsed.settings || {}) },
     };
   } catch (err) {
@@ -225,6 +228,66 @@ async function loadFromFirestore(): Promise<void> {
     const settingDoc = await getDoc(doc(firestoreDb, 'settings', 'agency'));
     if (settingDoc.exists()) {
       current.settings = { ...current.settings, ...settingDoc.data() };
+      modified = true;
+    }
+
+    // Load admin notifications
+    const notifsSnap = await getDocs(collection(firestoreDb, 'admin_notifications'));
+    if (!notifsSnap.empty) {
+      const fsNotifs: any[] = [];
+      notifsSnap.forEach((d) => fsNotifs.push(d.data()));
+      if (fsNotifs.length > 0) {
+        fsNotifs.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+        current.notifications = fsNotifs;
+        modified = true;
+      }
+    }
+
+    // Generate baseline notifications from existing orders if notifications collection is empty
+    if ((!current.notifications || current.notifications.length === 0) && current.orders.length > 0) {
+      current.notifications = [];
+      for (const ord of current.orders) {
+        if (ord.requirements && (ord.requirements.businessName || ord.requirements.submittedAt)) {
+          current.notifications.push({
+            id: `notif-req-${ord.id}`,
+            type: 'requirements_submitted',
+            title: 'Requirements Submitted',
+            message: `Requirements submitted for Order #${ord.id} (${ord.websiteName}) by ${ord.customerName}.`,
+            orderId: ord.id,
+            customerName: ord.customerName,
+            customerEmail: ord.customerEmail,
+            websiteName: ord.websiteName,
+            amount: ord.amount,
+            timestamp: ord.requirements.submittedAt || ord.updatedAt || ord.createdAt,
+            read: false,
+            priority: 'high',
+            details: {
+              businessName: ord.requirements.businessName,
+              hasLogo: Boolean(ord.requirements.logoUrl),
+              hasImages: Boolean(ord.requirements.uploadedImages?.length || ord.requirements.businessImages?.length),
+            },
+          });
+        }
+        current.notifications.push({
+          id: `notif-order-${ord.id}`,
+          type: 'new_order',
+          title: 'New Order Placed',
+          message: `Order #${ord.id} for "${ord.websiteName}" placed by ${ord.customerName} ($${ord.amount}).`,
+          orderId: ord.id,
+          customerName: ord.customerName,
+          customerEmail: ord.customerEmail,
+          websiteName: ord.websiteName,
+          amount: ord.amount,
+          timestamp: ord.createdAt,
+          read: false,
+          priority: 'high',
+          details: {
+            paymentStatus: ord.paymentStatus,
+            orderStatus: ord.orderStatus,
+          },
+        });
+      }
+      current.notifications.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
       modified = true;
     }
 
@@ -483,6 +546,56 @@ async function logAuditEvent(entry: {
   }
 }
 
+// Real-time Administrator Notifications Helper
+async function createAdminNotification(notif: {
+  type: 'new_order' | 'requirements_submitted';
+  title: string;
+  message: string;
+  orderId: string;
+  customerName: string;
+  customerEmail: string;
+  websiteName?: string;
+  amount?: number;
+  priority?: 'high' | 'normal';
+  details?: Record<string, any>;
+}) {
+  const notifId = `notif-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  const fullNotification = {
+    id: notifId,
+    type: notif.type,
+    title: notif.title,
+    message: notif.message,
+    orderId: notif.orderId,
+    customerName: notif.customerName,
+    customerEmail: notif.customerEmail,
+    websiteName: notif.websiteName || '',
+    amount: notif.amount,
+    timestamp: new Date().toISOString(),
+    read: false,
+    priority: notif.priority || 'high',
+    details: notif.details || {},
+  };
+
+  try {
+    const db = readDb();
+    if (!db.notifications) db.notifications = [];
+    db.notifications.unshift(fullNotification);
+    if (db.notifications.length > 200) {
+      db.notifications = db.notifications.slice(0, 200);
+    }
+    writeDb(db);
+  } catch (err) {
+    console.warn('Local admin notification write notice:', err);
+  }
+
+  try {
+    await syncToFirestore('admin_notifications', notifId, fullNotification);
+  } catch (err) {
+    console.warn('Firestore admin notification sync notice:', err);
+  }
+
+  return fullNotification;
+}
 
 async function startServer() {
   // Hydrate data from Firestore cloud database
@@ -745,6 +858,92 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ error: 'Failed to retrieve audit trail: ' + err.message });
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // REAL-TIME ADMIN NOTIFICATIONS API (Orders & Customer Requirements)
+  // -------------------------------------------------------------------------
+  app.get('/api/admin/notifications', requireAdmin, async (_req, res) => {
+    try {
+      const db = readDb();
+      const combined = new Map<string, any>();
+      (db.notifications || []).forEach((n: any) => combined.set(n.id, n));
+
+      if (firestoreDb) {
+        try {
+          const snap = await getDocs(collection(firestoreDb, 'admin_notifications'));
+          snap.forEach((d) => {
+            const data = d.data();
+            combined.set(data.id || d.id, data);
+          });
+        } catch (fsErr: any) {
+          console.warn('Firestore admin notifications read notice:', fsErr.message);
+        }
+      }
+
+      const notifications = Array.from(combined.values());
+      notifications.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+      res.json(notifications);
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to retrieve notifications: ' + err.message });
+    }
+  });
+
+  app.patch('/api/admin/notifications/:id/read', requireAdmin, async (req, res) => {
+    const { id } = req.params;
+    const db = readDb();
+    if (!db.notifications) db.notifications = [];
+    const index = db.notifications.findIndex((n) => n.id === id);
+    let target = index !== -1 ? db.notifications[index] : null;
+
+    if (target) {
+      target.read = true;
+      writeDb(db);
+    } else {
+      target = { id, read: true };
+    }
+
+    try {
+      await syncToFirestore('admin_notifications', id, { read: true });
+    } catch (e: any) {
+      console.warn('Firestore update read error:', e.message);
+    }
+
+    res.json(target);
+  });
+
+  app.post('/api/admin/notifications/mark-all-read', requireAdmin, async (_req, res) => {
+    const db = readDb();
+    if (Array.isArray(db.notifications)) {
+      for (const n of db.notifications) {
+        n.read = true;
+        syncToFirestore('admin_notifications', n.id, { read: true }).catch(() => {});
+      }
+      writeDb(db);
+    }
+    res.json({ success: true, count: db.notifications?.length || 0 });
+  });
+
+  app.delete('/api/admin/notifications/:id', requireAdmin, async (req, res) => {
+    const { id } = req.params;
+    const db = readDb();
+    if (Array.isArray(db.notifications)) {
+      db.notifications = db.notifications.filter((n) => n.id !== id);
+      writeDb(db);
+    }
+    await deleteFromFirestore('admin_notifications', id);
+    res.json({ success: true, id });
+  });
+
+  app.delete('/api/admin/notifications', requireAdmin, async (_req, res) => {
+    const db = readDb();
+    const old = db.notifications || [];
+    db.notifications = [];
+    writeDb(db);
+    for (const n of old) {
+      deleteFromFirestore('admin_notifications', n.id).catch(() => {});
+    }
+    res.json({ success: true });
   });
 
   app.post('/api/auth/customer/login', (req, res) => {
@@ -1324,6 +1523,41 @@ async function startServer() {
       writeDb(db);
       syncToFirestore('orders', newOrder.id, newOrder);
 
+      // Real-time Administrator Alert Notification
+      createAdminNotification({
+        type: 'new_order',
+        title: 'New Order Placed',
+        message: `Order #${newOrder.id} for "${newOrder.websiteName}" placed by ${newOrder.customerName} ($${newOrder.amount}).`,
+        orderId: newOrder.id,
+        customerName: newOrder.customerName,
+        customerEmail: newOrder.customerEmail,
+        websiteName: newOrder.websiteName,
+        amount: newOrder.amount,
+        priority: 'high',
+        details: {
+          paymentStatus: newOrder.paymentStatus,
+          orderStatus: newOrder.orderStatus,
+          phone: newOrder.customerPhone,
+        },
+      }).catch((e: any) => console.warn('Order notification notice:', e.message));
+
+      if (newOrder.requirements) {
+        createAdminNotification({
+          type: 'requirements_submitted',
+          title: 'Customer Submitted Requirements',
+          message: `Requirements submitted for Order #${newOrder.id} (${newOrder.websiteName}) by ${newOrder.customerName}.`,
+          orderId: newOrder.id,
+          customerName: newOrder.customerName,
+          customerEmail: newOrder.customerEmail,
+          websiteName: newOrder.websiteName,
+          amount: newOrder.amount,
+          priority: 'high',
+          details: {
+            businessName: newOrder.requirements.businessName,
+          },
+        }).catch((e: any) => console.warn('Requirements notification notice:', e.message));
+      }
+
       // Check for real Stripe configuration
       const stripe = getStripe();
       if (paymentMethod === 'stripe' && stripe) {
@@ -1675,6 +1909,26 @@ async function startServer() {
     order.updatedAt = new Date().toISOString();
     writeDb(db);
     await syncToFirestore('orders', order.id, order);
+
+    // Real-time Administrator Alert Notification
+    createAdminNotification({
+      type: 'requirements_submitted',
+      title: 'Customer Submitted Requirements',
+      message: `Requirements submitted for Order #${order.id} (${order.websiteName}) by ${order.customerName}.`,
+      orderId: order.id,
+      customerName: order.customerName,
+      customerEmail: order.customerEmail,
+      websiteName: order.websiteName,
+      amount: order.amount,
+      priority: 'high',
+      details: {
+        businessName: order.requirements.businessName,
+        hasLogo: Boolean(order.requirements.logoUrl),
+        hasImages: Boolean(order.requirements.uploadedImages?.length || order.requirements.businessImages?.length),
+        preferredColors: order.requirements.preferredColors,
+        services: order.requirements.services,
+      },
+    }).catch((e: any) => console.warn('Requirements notification notice:', e.message));
 
     res.json({ success: true, order });
   });

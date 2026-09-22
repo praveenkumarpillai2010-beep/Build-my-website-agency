@@ -5,17 +5,27 @@
       "description": "Real website published by the agency in the catalog",
       "type": "object",
       "properties": {
-        "title": { "type": "string", "description": "Title of the website" },
+        "id": { "type": "string", "description": "Unique website ID" },
+        "name": { "type": "string", "description": "Name of the website" },
         "category": { "type": "string", "description": "Industry category" },
-        "price": { "type": "number", "description": "USD price" },
-        "previewImage": { "type": "string", "description": "Preview image URL" },
-        "liveUrl": { "type": "string", "description": "Exact live URL" },
-        "isPublished": { "type": "boolean", "description": "Published visibility" },
-        "isFeatured": { "type": "boolean", "description": "Featured status" },
-        "order": { "type": "number", "description": "Sort order" },
-        "createdAt": { "type": "string", "description": "Creation timestamp" }
+        "shortDescription": { "type": "string", "description": "Concise summary for catalog cards" },
+        "description": { "type": "string", "description": "Comprehensive website description and deliverables" },
+        "price": { "type": "number", "description": "Selling price" },
+        "currency": { "type": "string", "description": "Currency code (e.g. USD)" },
+        "demoUrl": { "type": "string", "description": "Preview / Demo URL" },
+        "liveUrl": { "type": "string", "description": "Exact live website URL" },
+        "imageUrl": { "type": "string", "description": "Website thumbnail/preview image URL" },
+        "thumbnailUrl": { "type": "string", "description": "Thumbnail preview image URL" },
+        "features": { "type": "array", "description": "List of key features" },
+        "technologies": { "type": "array", "description": "List of technologies/frameworks used" },
+        "status": { "type": "string", "description": "Availability status (available, reserved, sold, in_development)" },
+        "featured": { "type": "boolean", "description": "Featured on homepage flag" },
+        "published": { "type": "boolean", "description": "Publicly visible flag" },
+        "displayOrder": { "type": "number", "description": "Sort display order" },
+        "createdAt": { "type": "string", "description": "Creation timestamp ISO" },
+        "updatedAt": { "type": "string", "description": "Last update timestamp ISO" }
       },
-      "required": ["title", "category", "price", "previewImage", "liveUrl", "isPublished", "createdAt"]
+      "required": ["name", "category", "price", "currency", "liveUrl", "createdAt", "updatedAt"]
     },
     "order": {
       "title": "Order",
@@ -64,6 +74,34 @@
         "stripeEnabled": { "type": "boolean", "description": "Stripe enabled flag" }
       },
       "required": ["agencyName", "whatsappNumber", "email"]
+    },
+    "admin": {
+      "title": "Admin",
+      "description": "Authorized administrator user profile and claims registry",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase user UID" },
+        "email": { "type": "string", "description": "Admin email address" },
+        "admin": { "type": "boolean", "description": "Admin role claim status" },
+        "assignedAt": { "type": "string", "description": "Role assignment timestamp" },
+        "assignedBy": { "type": "string", "description": "Assigner UID or system bootstrap" }
+      },
+      "required": ["uid", "email", "admin", "assignedAt"]
+    },
+    "audit_log": {
+      "title": "AuditLog",
+      "description": "Audit trail log of sensitive administrative actions",
+      "type": "object",
+      "properties": {
+        "adminUid": { "type": "string", "description": "Administrator UID performing the action" },
+        "adminEmail": { "type": "string", "description": "Administrator email" },
+        "action": { "type": "string", "description": "Action performed (e.g. WEBSITE_CREATED, ORDER_STATUS_CHANGED)" },
+        "resourceType": { "type": "string", "description": "Target resource type" },
+        "resourceId": { "type": "string", "description": "Target resource identifier" },
+        "timestamp": { "type": "string", "description": "ISO timestamp of the event" },
+        "details": { "type": "object", "description": "Additional context metadata" }
+      },
+      "required": ["adminUid", "action", "resourceType", "resourceId", "timestamp"]
     }
   },
   "firestore": {
@@ -82,6 +120,14 @@
     "/settings/{settingId}": {
       "schema": "setting",
       "description": "Agency configuration document"
+    },
+    "/admins/{adminId}": {
+      "schema": "admin",
+      "description": "Registry of authorized administrators"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "audit_log",
+      "description": "Audit log entries for administrative operations"
     }
   }
 }

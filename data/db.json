@@ -1,0 +1,37 @@
+{
+  "websites": [],
+  "orders": [],
+  "messages": [],
+  "settings": {
+    "agencyName": "BUILD MY WEBSITE",
+    "whatsappNumber": "15551234567",
+    "displayPhone": "+1 (555) 123-4567",
+    "email": "contact@buildmywebsite.agency",
+    "showStats": false,
+    "statsWebsitesCount": "",
+    "statsClientsCount": "",
+    "statsSupportAvailability": "",
+    "statsDeliverySpeed": "",
+    "stripeEnabled": false,
+    "stripePublishableKey": "",
+    "paypalEnabled": false,
+    "paypalClientId": "",
+    "testimonials": []
+  },
+  "auditLogs": [
+    {
+      "id": "log-1789734690571-it6ln",
+      "adminUid": "admin-root",
+      "adminEmail": "praveenkumarpillai2010@gmail.com",
+      "actorEmail": "praveenkumarpillai2010@gmail.com",
+      "action": "WEBSITE_DELETED",
+      "resourceType": "website",
+      "resourceId": "ws-mu6xtodf-friy7",
+      "targetId": "ws-mu6xtodf-friy7",
+      "details": {
+        "name": "Security Test Site"
+      },
+      "timestamp": "2026-09-18T12:31:30.571Z"
+    }
+  ]
+}

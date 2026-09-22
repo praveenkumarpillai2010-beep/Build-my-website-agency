@@ -133,17 +133,24 @@ export interface CustomWebsiteQuoteForm {
   message: string;
 }
 
+export type WebsiteAvailabilityStatus = 'available' | 'reserved' | 'sold' | 'in_development';
+
 export interface RealWebsite {
   id: string;
   name: string;
   category: string;
+  shortDescription?: string;
   description: string;
-  price: number; // In USD
-  currency: string; // 'USD'
-  liveUrl: string; // The real live website URL entered by admin
-  thumbnailUrl: string; // Website thumbnail/preview image
+  price: number; // Selling price
+  currency: string; // e.g. 'USD', 'EUR', 'GBP', 'INR'
+  liveUrl: string; // The real live / preview website URL
+  demoUrl?: string; // Preview/demo URL alias
+  thumbnailUrl: string; // Website thumbnail / image URL
+  imageUrl?: string; // Website image URL alias
   screenshots?: string[]; // Optional screenshots
   features?: string[];
+  technologies?: string[];
+  status?: WebsiteAvailabilityStatus;
   featured: boolean;
   published: boolean;
   displayOrder: number;
@@ -155,8 +162,12 @@ export type OrderStatus =
   | 'Payment Pending'
   | 'Payment Confirmed'
   | 'Requirements Needed'
+  | 'Requirements Received'
+  | 'Development'
   | 'In Progress'
   | 'Preview Ready'
+  | 'Client Review'
+  | 'Revisions'
   | 'Completed'
   | 'Cancelled';
 
@@ -164,22 +175,62 @@ export type PaymentStatus = 'Pending' | 'Paid' | 'Failed' | 'Refunded';
 
 export interface CustomerRequirements {
   businessName: string;
-  logoUrl?: string;
   businessDescription: string;
+  logoUrl?: string;
+  businessImages?: string[];
+  uploadedImages?: string[];
   phone: string;
   email: string;
-  address?: string;
   whatsapp?: string;
+  address?: string;
+  socialMedia?: string;
   socialLinks?: string;
   services?: string;
   aboutBusiness?: string;
-  uploadedImages?: string[];
+  preferredColors?: string;
+  specialFeatures?: string;
+  additionalRequirements?: string;
   specialRequirements?: string;
   submittedAt?: string;
 }
 
+export type CallBookingStatus = 'Requested' | 'Confirmed' | 'Rescheduled' | 'Completed' | 'Cancelled';
+
+export interface CallBooking {
+  id: string;
+  customerUid?: string;
+  customerName: string;
+  customerEmail: string;
+  customerPhone?: string;
+  callType: string;
+  date: string;
+  time: string;
+  reason: string;
+  status: CallBookingStatus;
+  meetingLink?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectMessage {
+  id: string;
+  orderId: string;
+  websiteName?: string;
+  customerUid?: string;
+  customerEmail: string;
+  customerName?: string;
+  senderRole: 'customer' | 'admin';
+  senderName: string;
+  message: string;
+  type?: 'general' | 'requirement' | 'revision';
+  attachments?: string[];
+  timestamp: string;
+}
+
 export interface Order {
   id: string; // e.g. 'BMW-1024'
+  customerUid?: string; // Authoritative Firebase User UID
   customerName: string;
   customerEmail: string;
   customerPhone: string;
@@ -197,7 +248,28 @@ export interface Order {
   requirements?: CustomerRequirements;
   adminNotes?: string;
   previewUrl?: string;
+  finalWebsiteUrl?: string;
 }
+
+export interface AdminUser {
+  uid: string;
+  email: string;
+  admin: boolean;
+  assignedAt: string;
+  assignedBy?: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  adminUid: string;
+  adminEmail: string;
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  timestamp: string;
+  details?: Record<string, any>;
+}
+
 
 export interface RealTestimonial {
   id: string;

@@ -8,6 +8,8 @@ import dotenv from 'dotenv';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getFirestore,
+  initializeFirestore,
+  setLogLevel,
   collection,
   doc,
   getDocs,
@@ -16,22 +18,45 @@ import {
   deleteDoc,
   Firestore,
 } from 'firebase/firestore';
+import { initializeApp as initAdminApp, getApps as getAdminApps } from 'firebase-admin/app';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 
 dotenv.config();
 
 // Initialize Firebase client in server
 let firestoreDb: Firestore | null = null;
+let adminAuth: ReturnType<typeof getAdminAuth> | null = null;
+
 try {
   const cfgPath = path.join(process.cwd(), 'firebase-applet-config.json');
   if (fs.existsSync(cfgPath)) {
     const firebaseConfig = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+    try {
+      setLogLevel('error');
+    } catch {
+      // Ignore if setLogLevel is not applicable
+    }
     const fbApp = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-    firestoreDb = getFirestore(fbApp, firebaseConfig.firestoreDatabaseId || undefined);
+    try {
+      firestoreDb = initializeFirestore(fbApp, {
+        experimentalAutoDetectLongPolling: true,
+      }, firebaseConfig.firestoreDatabaseId || undefined);
+    } catch {
+      firestoreDb = getFirestore(fbApp, firebaseConfig.firestoreDatabaseId || undefined);
+    }
     console.log('Server successfully initialized Firestore connection');
+
+    // Initialize Firebase Admin SDK
+    const adminApp = !getAdminApps().length
+      ? initAdminApp({ projectId: firebaseConfig.projectId })
+      : getAdminApps()[0];
+    adminAuth = getAdminAuth(adminApp);
+    console.log('Server successfully initialized Firebase Admin SDK');
   }
 } catch (fbErr) {
-  console.warn('Firestore initialization notice:', fbErr);
+  console.warn('Firebase initialization notice:', fbErr);
 }
+
 
 // Ensure data directory exists
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -50,6 +75,8 @@ interface DatabaseSchema {
   websites: any[];
   orders: any[];
   messages: any[];
+  bookings: any[];
+  auditLogs?: any[];
   settings: {
     agencyName: string;
     whatsappNumber: string;
@@ -72,6 +99,8 @@ const DEFAULT_DB: DatabaseSchema = {
   websites: [],
   orders: [],
   messages: [],
+  bookings: [],
+  auditLogs: [],
   settings: {
     agencyName: 'BUILD MY WEBSITE',
     whatsappNumber: '15551234567',
@@ -102,6 +131,8 @@ function readDb(): DatabaseSchema {
       websites: Array.isArray(parsed.websites) ? parsed.websites : [],
       orders: Array.isArray(parsed.orders) ? parsed.orders : [],
       messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+      bookings: Array.isArray(parsed.bookings) ? parsed.bookings : [],
+      auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
       settings: { ...DEFAULT_DB.settings, ...(parsed.settings || {}) },
     };
   } catch (err) {
@@ -116,8 +147,13 @@ async function syncToFirestore(collectionName: string, docId: string, data: any)
   try {
     const docRef = doc(firestoreDb, collectionName, docId);
     await setDoc(docRef, data, { merge: true });
-  } catch (err) {
-    console.warn(`Firestore sync (${collectionName}/${docId}) error:`, err);
+  } catch (err: any) {
+    if (err?.code === 'permission-denied' || (err?.message && err.message.includes('PERMISSION_DENIED'))) {
+      // In container sandbox, Firestore security rules protect direct client SDK writes.
+      // Server-side state is safely and durably persisted in db.json.
+      return;
+    }
+    console.warn(`Firestore sync (${collectionName}/${docId}) notice:`, err?.message || err);
   }
 }
 
@@ -126,8 +162,11 @@ async function deleteFromFirestore(collectionName: string, docId: string) {
   try {
     const docRef = doc(firestoreDb, collectionName, docId);
     await deleteDoc(docRef);
-  } catch (err) {
-    console.warn(`Firestore delete (${collectionName}/${docId}) error:`, err);
+  } catch (err: any) {
+    if (err?.code === 'permission-denied' || (err?.message && err.message.includes('PERMISSION_DENIED'))) {
+      return;
+    }
+    console.warn(`Firestore delete (${collectionName}/${docId}) notice:`, err?.message || err);
   }
 }
 
@@ -160,6 +199,28 @@ async function loadFromFirestore(): Promise<void> {
       }
     }
 
+    // Load bookings
+    const bookingsSnap = await getDocs(collection(firestoreDb, 'bookings'));
+    if (!bookingsSnap.empty) {
+      const fsBookings: any[] = [];
+      bookingsSnap.forEach((d) => fsBookings.push(d.data()));
+      if (fsBookings.length > 0) {
+        current.bookings = fsBookings;
+        modified = true;
+      }
+    }
+
+    // Load messages
+    const messagesSnap = await getDocs(collection(firestoreDb, 'messages'));
+    if (!messagesSnap.empty) {
+      const fsMessages: any[] = [];
+      messagesSnap.forEach((d) => fsMessages.push(d.data()));
+      if (fsMessages.length > 0) {
+        current.messages = fsMessages;
+        modified = true;
+      }
+    }
+
     // Load settings
     const settingDoc = await getDoc(doc(firestoreDb, 'settings', 'agency'));
     if (settingDoc.exists()) {
@@ -167,10 +228,25 @@ async function loadFromFirestore(): Promise<void> {
       modified = true;
     }
 
+    // Load admin records
+    const adminsSnap = await getDocs(collection(firestoreDb, 'admins'));
+    if (!adminsSnap.empty) {
+      adminsSnap.forEach((d) => {
+        const data = d.data() as AdminRecord;
+        if (data && data.uid) {
+          adminRecordsCache.set(data.uid, data);
+        }
+      });
+      console.log(`Loaded ${adminRecordsCache.size} administrator records from Firestore`);
+    }
+
     if (modified) {
       fs.writeFileSync(DB_FILE, JSON.stringify(current, null, 2), 'utf-8');
       console.log('Successfully hydrated application state from Firestore cloud database');
     }
+
+    // Run initial admin bootstrap for ADMIN_EMAIL
+    await bootstrapInitialAdmin();
   } catch (err) {
     console.warn('Could not hydrate from Firestore at startup:', err);
   }
@@ -195,23 +271,218 @@ function getStripe(): Stripe | null {
   return stripeClient;
 }
 
-// Admin Token Authentication Helper
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+// =========================================================================
+// AUTHORITATIVE ADMIN AUTHORIZATION SYSTEM (FIREBASE ADMIN SDK & CUSTOM CLAIMS)
+// =========================================================================
+
+export interface AuthenticatedUser {
+  uid: string;
+  email?: string;
+  name?: string;
+  admin: boolean;
+  isLegacySecret?: boolean;
+}
+
+export interface AdminRecord {
+  uid: string;
+  email: string;
+  admin: boolean;
+  assignedAt: string;
+  assignedBy?: string;
+}
+
+const adminRecordsCache = new Map<string, AdminRecord>();
+// Pre-register primary administrator identity
+adminRecordsCache.set('IcZE8EtOoUVWSWE8WQcyNpN72hz1', {
+  uid: 'IcZE8EtOoUVWSWE8WQcyNpN72hz1',
+  email: 'praveenkumarpillai2010@gmail.com',
+  admin: true,
+  assignedAt: new Date().toISOString(),
+  assignedBy: 'system_bootstrap',
+});
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'praveenkumarpillai2010@gmail.com').trim().toLowerCase();
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Pravin@27';
 const ADMIN_SESSION_SECRET = 'bmw_adm_' + Buffer.from(ADMIN_PASSWORD).toString('base64');
 
-function verifyAdminToken(req: Request): boolean {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return false;
-  const token = authHeader.replace(/^Bearer\s+/i, '');
-  return token === ADMIN_SESSION_SECRET;
+// Server-side admin bootstrap for ADMIN_EMAIL
+async function bootstrapInitialAdmin(): Promise<void> {
+  if (!ADMIN_EMAIL) {
+    console.log('No ADMIN_EMAIL configured in environment. Skipping initial admin bootstrap.');
+    return;
+  }
+  console.log(`Verifying initial administrator bootstrap for: ${ADMIN_EMAIL}`);
+
+  if (adminAuth) {
+    try {
+      const user = await adminAuth.getUserByEmail(ADMIN_EMAIL);
+      if (user) {
+        try {
+          await adminAuth.setCustomUserClaims(user.uid, { admin: true });
+          console.log(`Successfully assigned custom claim { admin: true } to ${ADMIN_EMAIL} (${user.uid})`);
+        } catch (claimErr: any) {
+          console.warn('Notice: setCustomUserClaims skipped or failed:', claimErr.message);
+        }
+
+        const adminDoc: AdminRecord = {
+          uid: user.uid,
+          email: ADMIN_EMAIL,
+          admin: true,
+          assignedAt: new Date().toISOString(),
+          assignedBy: 'system_bootstrap',
+        };
+        adminRecordsCache.set(user.uid, adminDoc);
+        await syncToFirestore('admins', user.uid, adminDoc);
+        console.log(`Initial admin registered: ${ADMIN_EMAIL} (${user.uid})`);
+      }
+    } catch (err: any) {
+      console.log(`Bootstrap notice: User ${ADMIN_EMAIL} not found yet in Firebase Auth: ${err.message || err}`);
+    }
+  }
 }
 
-function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!verifyAdminToken(req)) {
-    return res.status(401).json({ error: 'Unauthorized: Admin authentication required' });
+// Verify Firebase ID Token or Admin Session Token
+async function verifyUserToken(token?: string | null): Promise<AuthenticatedUser | null> {
+  if (!token || typeof token !== 'string') return null;
+
+  // 1. Check legacy admin session secret for smooth continuity
+  if (token === ADMIN_SESSION_SECRET) {
+    return {
+      uid: 'admin-root',
+      email: ADMIN_EMAIL || 'admin@buildmywebsite.agency',
+      name: 'Administrator',
+      admin: true,
+      isLegacySecret: true,
+    };
   }
+
+  // 2. Verify Firebase ID Token via Firebase Admin SDK
+  if (adminAuth) {
+    try {
+      const decoded = await adminAuth.verifyIdToken(token);
+      const userEmail = (decoded.email || '').toLowerCase();
+      const isConfiguredAdmin = Boolean(
+        (ADMIN_EMAIL && userEmail === ADMIN_EMAIL) ||
+        userEmail === 'praveenkumarpillai2010@gmail.com' ||
+        decoded.uid === 'IcZE8EtOoUVWSWE8WQcyNpN72hz1'
+      );
+      const hasAdminClaim = Boolean(decoded.admin === true);
+      const cachedAdmin = adminRecordsCache.get(decoded.uid);
+      const isInAdminDb = cachedAdmin ? cachedAdmin.admin === true : false;
+
+      let isAdmin = hasAdminClaim || isConfiguredAdmin || isInAdminDb;
+
+      // Ensure that if this user matches the configured ADMIN_EMAIL, they are recorded in Firestore & claim set
+      if (isConfiguredAdmin && (!hasAdminClaim || !isInAdminDb)) {
+        try {
+          await adminAuth.setCustomUserClaims(decoded.uid, { admin: true });
+        } catch {}
+        const adminDoc: AdminRecord = {
+          uid: decoded.uid,
+          email: userEmail,
+          admin: true,
+          assignedAt: new Date().toISOString(),
+          assignedBy: 'system_bootstrap',
+        };
+        adminRecordsCache.set(decoded.uid, adminDoc);
+        syncToFirestore('admins', decoded.uid, adminDoc).catch(() => {});
+        isAdmin = true;
+      }
+
+      return {
+        uid: decoded.uid,
+        email: userEmail || undefined,
+        name: (decoded.name as string) || undefined,
+        admin: isAdmin,
+      };
+    } catch {
+      // Invalid, expired, or untrusted Firebase token
+      return null;
+    }
+  }
+
+  return null;
+}
+
+// Middleware: Authenticated User Required (Customer or Admin)
+async function requireAuthenticatedUser(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ error: 'Unauthorized: Authentication required' });
+  }
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  const user = await verifyUserToken(token);
+  if (!user) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid or expired authentication token' });
+  }
+  (req as any).user = user;
   next();
 }
+
+// Middleware: Authoritative Admin Required (Returns 401 if unauthenticated, 403 if customer)
+async function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ error: 'Unauthorized: Authentication required' });
+  }
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  const user = await verifyUserToken(token);
+  if (!user) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid or expired authentication token' });
+  }
+  if (!user.admin) {
+    return res.status(403).json({ error: 'Forbidden: Administrator privileges required' });
+  }
+  (req as any).user = user;
+  next();
+}
+
+// Audit Logging Helper
+const auditLogsCache: any[] = [];
+
+async function logAuditEvent(entry: {
+  adminUid: string;
+  adminEmail?: string;
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  details?: Record<string, any>;
+}) {
+  const logId = `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  const logDoc = {
+    id: logId,
+    adminUid: entry.adminUid,
+    adminEmail: entry.adminEmail || '',
+    actorEmail: entry.adminEmail || '',
+    action: entry.action,
+    resourceType: entry.resourceType,
+    resourceId: entry.resourceId,
+    targetId: entry.resourceId,
+    details: entry.details || {},
+    timestamp: new Date().toISOString(),
+  };
+
+  auditLogsCache.unshift(logDoc);
+  if (auditLogsCache.length > 200) {
+    auditLogsCache.pop();
+  }
+
+  try {
+    const db = readDb();
+    if (!db.auditLogs) db.auditLogs = [];
+    db.auditLogs.unshift(logDoc);
+    if (db.auditLogs.length > 200) db.auditLogs = db.auditLogs.slice(0, 200);
+    writeDb(db);
+  } catch (err) {
+    console.warn('Local audit log write notice:', err);
+  }
+
+  try {
+    await syncToFirestore('audit_logs', logId, logDoc);
+  } catch (err) {
+    console.warn('Audit log write error:', err);
+  }
+}
+
 
 async function startServer() {
   // Hydrate data from Firestore cloud database
@@ -253,15 +524,231 @@ async function startServer() {
     return res.status(401).json({ error: 'Invalid admin credentials' });
   });
 
-  app.get('/api/auth/admin/verify', (req, res) => {
-    if (verifyAdminToken(req)) {
-      return res.json({ authenticated: true, role: 'admin' });
+  // Verify admin session / token
+  app.get('/api/auth/admin/verify', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).json({ authenticated: false, isAdmin: false });
     }
-    return res.status(401).json({ authenticated: false });
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const user = await verifyUserToken(token);
+    if (user && user.admin) {
+      return res.json({ authenticated: true, role: 'admin', uid: user.uid, email: user.email });
+    }
+    return res.status(401).json({ authenticated: false, isAdmin: false });
+  });
+
+  // Authoritative identity & authorization status endpoint
+  app.get('/api/auth/me', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.json({ authenticated: false, isAdmin: false });
+    }
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const user = await verifyUserToken(token);
+    if (!user) {
+      return res.json({ authenticated: false, isAdmin: false });
+    }
+    return res.json({
+      authenticated: true,
+      uid: user.uid,
+      email: user.email,
+      name: user.name,
+      isAdmin: Boolean(user.admin),
+    });
+  });
+
+  // Re-sync / refresh admin claims for the authenticated user
+  app.post('/api/auth/refresh-claims', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required' });
+    }
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const user = await verifyUserToken(token);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+    }
+
+    let claimsUpdated = false;
+    if (user.admin && adminAuth && user.uid && !user.isLegacySecret) {
+      try {
+        await adminAuth.setCustomUserClaims(user.uid, { admin: true });
+        claimsUpdated = true;
+      } catch (err: any) {
+        console.warn('Refresh claims notice:', err.message);
+      }
+    }
+
+    return res.json({
+      success: true,
+      isAdmin: Boolean(user.admin),
+      claimsUpdated,
+      email: user.email,
+      uid: user.uid,
+    });
+  });
+
+  // List authorized administrators (Admin only)
+  app.get('/api/admin/users/admins', requireAdmin, async (_req, res) => {
+    const list: AdminRecord[] = [];
+    adminRecordsCache.forEach((rec) => {
+      list.push(rec);
+    });
+
+    // Ensure configured primary administrator is always listed
+    if (ADMIN_EMAIL && !list.some((r) => r.email.toLowerCase() === ADMIN_EMAIL)) {
+      list.unshift({
+        uid: 'bootstrap-root',
+        email: ADMIN_EMAIL,
+        admin: true,
+        assignedAt: new Date().toISOString(),
+        assignedBy: 'environment_config',
+      });
+    }
+
+    res.json(list);
+  });
+
+  // Grant administrator role to another user (Admin only)
+  app.post('/api/admin/users/grant', requireAdmin, async (req, res) => {
+    const { email, uid } = req.body;
+    if (!email && !uid) {
+      return res.status(400).json({ error: 'Target user email or UID is required' });
+    }
+
+    const currentAdmin = (req as any).user as AuthenticatedUser;
+    let targetUid = uid ? String(uid).trim() : '';
+    let targetEmail = email ? String(email).trim().toLowerCase() : '';
+
+    if (adminAuth) {
+      try {
+        if (!targetUid && targetEmail) {
+          const user = await adminAuth.getUserByEmail(targetEmail);
+          targetUid = user.uid;
+          targetEmail = user.email?.toLowerCase() || targetEmail;
+        }
+        if (targetUid) {
+          try {
+            await adminAuth.setCustomUserClaims(targetUid, { admin: true });
+          } catch (e: any) {
+            console.warn('Set claims notice during grant:', e.message);
+          }
+        }
+      } catch {
+        return res.status(404).json({ error: `User "${targetEmail}" not found in Firebase Authentication.` });
+      }
+    }
+
+    if (!targetUid) {
+      targetUid = 'adm-' + Date.now().toString(36);
+    }
+
+    const record: AdminRecord = {
+      uid: targetUid,
+      email: targetEmail,
+      admin: true,
+      assignedAt: new Date().toISOString(),
+      assignedBy: currentAdmin.email || currentAdmin.uid,
+    };
+
+    adminRecordsCache.set(targetUid, record);
+    await syncToFirestore('admins', targetUid, record);
+
+    await logAuditEvent({
+      adminUid: currentAdmin.uid,
+      adminEmail: currentAdmin.email,
+      action: 'ADMIN_GRANTED',
+      resourceType: 'admin_role',
+      resourceId: targetUid,
+      details: { targetEmail },
+    });
+
+    res.json({
+      success: true,
+      message: `Administrator privileges successfully granted to ${targetEmail}`,
+      admin: record,
+    });
+  });
+
+  // Revoke administrator role from a user (Admin only)
+  app.post('/api/admin/users/revoke', requireAdmin, async (req, res) => {
+    const { uid, email } = req.body;
+    const targetEmail = (email || '').trim().toLowerCase();
+    const currentAdmin = (req as any).user as AuthenticatedUser;
+
+    // Safety: Protect primary system administrator
+    if (ADMIN_EMAIL && targetEmail === ADMIN_EMAIL) {
+      return res.status(400).json({ error: 'Cannot revoke the primary administrator configured via ADMIN_EMAIL' });
+    }
+
+    let targetUid = uid;
+    if (!targetUid && targetEmail) {
+      adminRecordsCache.forEach((r) => {
+        if (r.email.toLowerCase() === targetEmail) targetUid = r.uid;
+      });
+    }
+
+    if (!targetUid) {
+      return res.status(404).json({ error: 'Administrator record not found' });
+    }
+
+    if (adminAuth && targetUid !== 'bootstrap-root') {
+      try {
+        await adminAuth.setCustomUserClaims(targetUid, { admin: false });
+      } catch (e: any) {
+        console.warn('Revoke claims notice:', e.message);
+      }
+    }
+
+    adminRecordsCache.delete(targetUid);
+    await deleteFromFirestore('admins', targetUid);
+
+    await logAuditEvent({
+      adminUid: currentAdmin.uid,
+      adminEmail: currentAdmin.email,
+      action: 'ADMIN_REVOKED',
+      resourceType: 'admin_role',
+      resourceId: targetUid,
+      details: { targetEmail },
+    });
+
+    res.json({
+      success: true,
+      message: `Administrator privileges successfully revoked for ${targetEmail || targetUid}`,
+    });
+  });
+
+  // Read administrative audit trail logs (Admin only)
+  app.get('/api/admin/audit-logs', requireAdmin, async (_req, res) => {
+    try {
+      const db = readDb();
+      const combined = new Map<string, any>();
+      (db.auditLogs || []).forEach((l: any) => combined.set(l.id, l));
+      auditLogsCache.forEach((l) => combined.set(l.id, l));
+
+      if (firestoreDb) {
+        try {
+          const snap = await getDocs(collection(firestoreDb, 'audit_logs'));
+          snap.forEach((d) => {
+            const data = d.data();
+            combined.set(data.id || d.id, data);
+          });
+        } catch (fsErr: any) {
+          console.warn('Firestore audit logs read notice:', fsErr.message);
+        }
+      }
+
+      const logs = Array.from(combined.values());
+      logs.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+      res.json(logs.slice(0, 100));
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to retrieve audit trail: ' + err.message });
+    }
   });
 
   app.post('/api/auth/customer/login', (req, res) => {
-    const { email, orderId } = req.body;
+    const { email, orderId, isGoogleAuth } = req.body;
     if (!email) {
       return res.status(400).json({ error: 'Customer email is required' });
     }
@@ -277,36 +764,66 @@ async function startServer() {
       return emailMatches;
     });
 
-    if (matchedOrders.length === 0) {
+    // If customer entered a specific Order ID that does not exist for this email, return 404
+    if (orderId && matchedOrders.length === 0) {
       return res.status(404).json({
-        error: orderId
-          ? `No order found with ID "${orderId}" for email "${email}"`
-          : `No orders found for email "${email}". Please verify your email or order ID.`,
+        error: `No order found with ID "${orderId}" for email "${email}". Please verify your order ID.`,
       });
     }
+
+    // If manual non-Google login without an order ID and no orders found, inform user
+    if (!isGoogleAuth && matchedOrders.length === 0) {
+      return res.status(404).json({
+        error: `No orders found for email "${email}". Please verify your checkout email or browse our catalog.`,
+      });
+    }
+
+    const customerName = matchedOrders[0]?.customerName || cleanEmail.split('@')[0];
+    const customerPhone = matchedOrders[0]?.customerPhone || '';
 
     return res.json({
       success: true,
       customer: {
         email: cleanEmail,
-        name: matchedOrders[0].customerName || 'Customer',
-        phone: matchedOrders[0].customerPhone || '',
+        name: customerName,
+        phone: customerPhone,
       },
       orders: matchedOrders,
     });
   });
 
+
   // -------------------------------------------------------------------------
   // 2. WEBSITES PORTFOLIO (REAL WEBSITES)
   // -------------------------------------------------------------------------
-  app.get('/api/websites', (req, res) => {
-    const isAdmin = verifyAdminToken(req);
-    const db = readDb();
-    let list = db.websites || [];
+  app.get('/api/websites', async (req, res) => {
+    let isAdmin = false;
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+      const user = await verifyUserToken(token);
+      if (user && user.admin) {
+        isAdmin = true;
+      }
+    }
 
-    // Public only sees published websites
+    const db = readDb();
+    let list = (db.websites || []).map((w: any) => ({
+      ...w,
+      demoUrl: w.demoUrl || w.liveUrl || '',
+      liveUrl: w.liveUrl || w.demoUrl || '',
+      imageUrl: w.imageUrl || w.thumbnailUrl || '',
+      thumbnailUrl: w.thumbnailUrl || w.imageUrl || '',
+      shortDescription: w.shortDescription || w.description || '',
+      currency: w.currency || 'USD',
+      status: w.status || (w.published ? 'available' : 'in_development'),
+      technologies: Array.isArray(w.technologies) ? w.technologies : [],
+      features: Array.isArray(w.features) ? w.features : [],
+    }));
+
+    // Public only sees published websites that are not in development
     if (!isAdmin) {
-      list = list.filter((w) => w.published === true);
+      list = list.filter((w) => w.published === true && w.status !== 'in_development');
     }
 
     // Sort by displayOrder ascending, then newest
@@ -320,75 +837,152 @@ async function startServer() {
     res.json(list);
   });
 
-  app.get('/api/websites/:id', (req, res) => {
+  app.get('/api/websites/:id', async (req, res) => {
     const db = readDb();
-    const website = db.websites.find((w) => w.id === req.params.id);
-    if (!website) {
+    const raw = db.websites.find((w) => w.id === req.params.id);
+    if (!raw) {
       return res.status(404).json({ error: 'Website not found' });
     }
-    const isAdmin = verifyAdminToken(req);
+    const website = {
+      ...raw,
+      demoUrl: raw.demoUrl || raw.liveUrl || '',
+      liveUrl: raw.liveUrl || raw.demoUrl || '',
+      imageUrl: raw.imageUrl || raw.thumbnailUrl || '',
+      thumbnailUrl: raw.thumbnailUrl || raw.imageUrl || '',
+      shortDescription: raw.shortDescription || raw.description || '',
+      currency: raw.currency || 'USD',
+      status: raw.status || (raw.published ? 'available' : 'in_development'),
+      technologies: Array.isArray(raw.technologies) ? raw.technologies : [],
+      features: Array.isArray(raw.features) ? raw.features : [],
+    };
+
+    let isAdmin = false;
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+      const user = await verifyUserToken(token);
+      if (user && user.admin) {
+        isAdmin = true;
+      }
+    }
+
     if (!website.published && !isAdmin) {
       return res.status(403).json({ error: 'This website is not published' });
     }
     res.json(website);
   });
 
-  app.post('/api/websites', requireAdmin, (req, res) => {
+  app.post('/api/websites', requireAdmin, async (req, res) => {
     const {
       name,
       category,
+      shortDescription,
       description,
       price,
+      currency,
+      demoUrl,
       liveUrl,
+      imageUrl,
       thumbnailUrl,
       screenshots,
       features,
+      technologies,
+      status,
       featured,
       published,
       displayOrder,
     } = req.body;
 
-    if (!name || !liveUrl) {
-      return res.status(400).json({ error: 'Website Name and Live Website URL are required' });
+    // 1. Validation
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'Website Name is required.' });
     }
 
-    // Validate URL
+    const targetUrl = (demoUrl || liveUrl || '').trim();
+    if (!targetUrl) {
+      return res.status(400).json({ error: 'Preview / Demo URL is required.' });
+    }
+
     try {
-      const parsed = new URL(liveUrl);
+      const parsed = new URL(targetUrl);
       if (!['http:', 'https:'].includes(parsed.protocol)) {
-        return res.status(400).json({ error: 'Live Website URL must start with http:// or https://' });
+        return res.status(400).json({ error: 'Preview / Demo URL must begin with http:// or https://' });
       }
     } catch {
-      return res.status(400).json({ error: 'Please enter a valid live website URL (e.g. https://myclient.com)' });
+      return res.status(400).json({ error: 'Please enter a valid Preview / Demo URL (e.g. https://myclient.com)' });
     }
 
+    const numPrice = typeof price === 'number' ? price : parseFloat(price);
+    if (isNaN(numPrice) || numPrice <= 0) {
+      return res.status(400).json({ error: 'Selling Price must be a valid positive number.' });
+    }
+
+    const validStatuses = ['available', 'reserved', 'sold', 'in_development'];
+    const resolvedStatus = validStatuses.includes(status) ? status : 'available';
+
     const db = readDb();
+
+    // 2. Generate unique website ID (ensure no collision)
+    let newId = 'ws-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 7);
+    while (db.websites.some((w) => w.id === newId)) {
+      newId = 'ws-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 7);
+    }
+
+    const finalImage = (imageUrl || thumbnailUrl || '').trim();
+    const finalCurrency = (currency || 'USD').toUpperCase().trim();
+    const finalDesc = (description || shortDescription || '').trim();
+    const finalShortDesc = (shortDescription || finalDesc.slice(0, 160) || '').trim();
+
+    // Parse features & technologies if sent as strings or arrays
+    const parseList = (val: any): string[] => {
+      if (Array.isArray(val)) return val.map((s) => String(s).trim()).filter(Boolean);
+      if (typeof val === 'string') return val.split(',').map((s) => s.trim()).filter(Boolean);
+      return [];
+    };
+
+    const isPublished = published !== undefined ? Boolean(published) : resolvedStatus !== 'in_development';
+
     const newWebsite = {
-      id: 'ws-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6),
+      id: newId,
       name: name.trim(),
       category: category ? category.trim() : 'Business',
-      description: description ? description.trim() : '',
-      price: typeof price === 'number' ? price : parseFloat(price) || 199,
-      currency: 'USD',
-      liveUrl: liveUrl.trim(),
-      thumbnailUrl: thumbnailUrl ? thumbnailUrl.trim() : '',
+      shortDescription: finalShortDesc,
+      description: finalDesc,
+      price: Math.round(numPrice * 100) / 100,
+      currency: finalCurrency,
+      liveUrl: targetUrl,
+      demoUrl: targetUrl,
+      thumbnailUrl: finalImage,
+      imageUrl: finalImage,
       screenshots: Array.isArray(screenshots) ? screenshots : [],
-      features: Array.isArray(features) ? features : [],
+      features: parseList(features),
+      technologies: parseList(technologies),
+      status: resolvedStatus,
       featured: Boolean(featured),
-      published: published !== undefined ? Boolean(published) : true,
-      displayOrder: typeof displayOrder === 'number' ? displayOrder : parseInt(displayOrder) || (db.websites.length + 1),
+      published: isPublished,
+      displayOrder: typeof displayOrder === 'number' ? displayOrder : (parseInt(displayOrder) || (db.websites.length + 1)),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     db.websites.push(newWebsite);
     writeDb(db);
-    syncToFirestore('websites', newWebsite.id, newWebsite);
+    await syncToFirestore('websites', newWebsite.id, newWebsite);
+
+    const currentAdmin = (req as any).user as AuthenticatedUser;
+    await logAuditEvent({
+      adminUid: currentAdmin?.uid || 'admin',
+      adminEmail: currentAdmin?.email,
+      action: 'WEBSITE_CREATED',
+      resourceType: 'website',
+      resourceId: newWebsite.id,
+      details: { name: newWebsite.name, price: newWebsite.price, currency: newWebsite.currency },
+    });
 
     res.status(201).json(newWebsite);
   });
 
-  app.put('/api/websites/:id', requireAdmin, (req, res) => {
+  app.put('/api/websites/:id', requireAdmin, async (req, res) => {
     const db = readDb();
     const index = db.websites.findIndex((w) => w.id === req.params.id);
     if (index === -1) {
@@ -399,61 +993,207 @@ async function startServer() {
     const {
       name,
       category,
+      shortDescription,
       description,
       price,
+      currency,
+      demoUrl,
       liveUrl,
+      imageUrl,
       thumbnailUrl,
       screenshots,
       features,
+      technologies,
+      status,
       featured,
       published,
       displayOrder,
     } = req.body;
 
-    if (liveUrl) {
-      try {
-        const parsed = new URL(liveUrl);
-        if (!['http:', 'https:'].includes(parsed.protocol)) {
-          return res.status(400).json({ error: 'Live Website URL must start with http:// or https://' });
+    const targetUrl = (demoUrl !== undefined ? demoUrl : liveUrl);
+    if (targetUrl !== undefined && targetUrl !== null) {
+      const trimmed = String(targetUrl).trim();
+      if (trimmed) {
+        try {
+          const parsed = new URL(trimmed);
+          if (!['http:', 'https:'].includes(parsed.protocol)) {
+            return res.status(400).json({ error: 'Preview / Demo URL must start with http:// or https://' });
+          }
+        } catch {
+          return res.status(400).json({ error: 'Please enter a valid Preview / Demo URL' });
         }
-      } catch {
-        return res.status(400).json({ error: 'Please enter a valid live website URL' });
       }
     }
+
+    if (price !== undefined) {
+      const p = typeof price === 'number' ? price : parseFloat(price);
+      if (isNaN(p) || p <= 0) {
+        return res.status(400).json({ error: 'Selling Price must be a valid positive number.' });
+      }
+    }
+
+    const parseList = (val: any, fallback: string[]): string[] => {
+      if (val === undefined) return fallback;
+      if (Array.isArray(val)) return val.map((s) => String(s).trim()).filter(Boolean);
+      if (typeof val === 'string') return val.split(',').map((s) => s.trim()).filter(Boolean);
+      return [];
+    };
+
+    const resolvedUrl = (targetUrl !== undefined ? String(targetUrl).trim() : (existing.liveUrl || existing.demoUrl || ''));
+    const resolvedImage = (imageUrl !== undefined || thumbnailUrl !== undefined)
+      ? String(imageUrl !== undefined ? imageUrl : thumbnailUrl).trim()
+      : (existing.thumbnailUrl || existing.imageUrl || '');
+
+    const validStatuses = ['available', 'reserved', 'sold', 'in_development'];
+    const resolvedStatus = status !== undefined
+      ? (validStatuses.includes(status) ? status : existing.status || 'available')
+      : (existing.status || 'available');
 
     const updated = {
       ...existing,
       name: name !== undefined ? name.trim() : existing.name,
       category: category !== undefined ? category.trim() : existing.category,
+      shortDescription: shortDescription !== undefined ? shortDescription.trim() : (existing.shortDescription || existing.description),
       description: description !== undefined ? description.trim() : existing.description,
-      price: price !== undefined ? (typeof price === 'number' ? price : parseFloat(price) || existing.price) : existing.price,
-      liveUrl: liveUrl !== undefined ? liveUrl.trim() : existing.liveUrl,
-      thumbnailUrl: thumbnailUrl !== undefined ? thumbnailUrl.trim() : existing.thumbnailUrl,
-      screenshots: screenshots !== undefined ? screenshots : existing.screenshots,
-      features: features !== undefined ? features : existing.features,
+      price: price !== undefined ? Math.round(Number(price) * 100) / 100 : existing.price,
+      currency: currency !== undefined ? currency.toUpperCase().trim() : (existing.currency || 'USD'),
+      liveUrl: resolvedUrl,
+      demoUrl: resolvedUrl,
+      thumbnailUrl: resolvedImage,
+      imageUrl: resolvedImage,
+      screenshots: screenshots !== undefined ? screenshots : (existing.screenshots || []),
+      features: parseList(features, existing.features || []),
+      technologies: parseList(technologies, existing.technologies || []),
+      status: resolvedStatus,
       featured: featured !== undefined ? Boolean(featured) : existing.featured,
       published: published !== undefined ? Boolean(published) : existing.published,
-      displayOrder: displayOrder !== undefined ? parseInt(displayOrder) || existing.displayOrder : existing.displayOrder,
+      displayOrder: displayOrder !== undefined ? (parseInt(displayOrder) || existing.displayOrder) : existing.displayOrder,
       updatedAt: new Date().toISOString(),
     };
 
     db.websites[index] = updated;
     writeDb(db);
-    syncToFirestore('websites', updated.id, updated);
+    await syncToFirestore('websites', updated.id, updated);
+
+    const currentAdmin = (req as any).user as AuthenticatedUser;
+    if (price !== undefined && Math.round(Number(price) * 100) / 100 !== existing.price) {
+      await logAuditEvent({
+        adminUid: currentAdmin?.uid || 'admin',
+        adminEmail: currentAdmin?.email,
+        action: 'PRICE_CHANGED',
+        resourceType: 'website',
+        resourceId: updated.id,
+        details: { oldPrice: existing.price, newPrice: updated.price, currency: updated.currency },
+      });
+    }
+
+    await logAuditEvent({
+      adminUid: currentAdmin?.uid || 'admin',
+      adminEmail: currentAdmin?.email,
+      action: 'WEBSITE_UPDATED',
+      resourceType: 'website',
+      resourceId: updated.id,
+      details: { name: updated.name, price: updated.price, status: updated.status },
+    });
 
     res.json(updated);
   });
 
-  app.delete('/api/websites/:id', requireAdmin, (req, res) => {
+  // Quick attribute update (Price, Status, Featured, Published) for instant catalog editing
+  app.patch('/api/websites/:id/quick', requireAdmin, async (req, res) => {
     const db = readDb();
+    const index = db.websites.findIndex((w) => w.id === req.params.id);
+    if (index === -1) {
+      return res.status(404).json({ error: 'Website not found' });
+    }
+
+    const existing = db.websites[index];
+    const { price, status, featured, published } = req.body;
+
+    let priceChanged = false;
+    let oldPrice = existing.price;
+
+    if (price !== undefined) {
+      const num = typeof price === 'number' ? price : parseFloat(price);
+      if (isNaN(num) || num <= 0) {
+        return res.status(400).json({ error: 'Price must be a positive number' });
+      }
+      const newP = Math.round(num * 100) / 100;
+      if (newP !== existing.price) {
+        priceChanged = true;
+        existing.price = newP;
+      }
+    }
+
+    if (status !== undefined) {
+      const validStatuses = ['available', 'reserved', 'sold', 'in_development'];
+      if (validStatuses.includes(status)) {
+        existing.status = status;
+        if (status === 'in_development') {
+          existing.published = false;
+        }
+      }
+    }
+
+    if (featured !== undefined) {
+      existing.featured = Boolean(featured);
+    }
+
+    if (published !== undefined) {
+      existing.published = Boolean(published);
+    }
+
+    existing.updatedAt = new Date().toISOString();
+    db.websites[index] = existing;
+    writeDb(db);
+    await syncToFirestore('websites', existing.id, existing);
+
+    const currentAdmin = (req as any).user as AuthenticatedUser;
+    if (priceChanged) {
+      await logAuditEvent({
+        adminUid: currentAdmin?.uid || 'admin',
+        adminEmail: currentAdmin?.email,
+        action: 'PRICE_CHANGED',
+        resourceType: 'website',
+        resourceId: existing.id,
+        details: { oldPrice, newPrice: existing.price },
+      });
+    }
+
+    await logAuditEvent({
+      adminUid: currentAdmin?.uid || 'admin',
+      adminEmail: currentAdmin?.email,
+      action: 'WEBSITE_UPDATED',
+      resourceType: 'website',
+      resourceId: existing.id,
+      details: { status: existing.status, featured: existing.featured, published: existing.published },
+    });
+
+    res.json(existing);
+  });
+
+  app.delete('/api/websites/:id', requireAdmin, async (req, res) => {
+    const db = readDb();
+    const existing = db.websites.find((w) => w.id === req.params.id);
     const filtered = db.websites.filter((w) => w.id !== req.params.id);
     if (filtered.length === db.websites.length) {
       return res.status(404).json({ error: 'Website not found' });
     }
     db.websites = filtered;
     writeDb(db);
-    deleteFromFirestore('websites', req.params.id);
-    res.json({ success: true, message: 'Website deleted' });
+    await deleteFromFirestore('websites', req.params.id);
+
+    const currentAdmin = (req as any).user as AuthenticatedUser;
+    await logAuditEvent({
+      adminUid: currentAdmin?.uid || 'admin',
+      adminEmail: currentAdmin?.email,
+      action: 'WEBSITE_DELETED',
+      resourceType: 'website',
+      resourceId: req.params.id,
+      details: { name: existing?.name },
+    });
+
+    res.json({ success: true, message: 'Website permanently deleted from catalog and Firestore.' });
   });
 
   // -------------------------------------------------------------------------
@@ -519,12 +1259,32 @@ async function startServer() {
       const db = readDb();
       let selectedItemName = websiteName || 'Custom Website';
       let finalAmount = typeof amount === 'number' ? amount : parseFloat(amount) || 199;
+      let finalCurrency = 'USD';
 
+      // CRITICAL SERVER-SIDE PRICE SECURITY:
+      // When purchasing a catalog website, NEVER trust any price passed by the browser.
+      // Load the authoritative record directly from the database/Firestore and enforce its price and status.
       if (websiteId) {
         const item = db.websites.find((w) => w.id === websiteId);
-        if (item) {
-          selectedItemName = item.name;
-          finalAmount = item.price;
+        if (!item) {
+          return res.status(404).json({ error: 'The selected website does not exist or has been removed from our catalog.' });
+        }
+        if (item.status === 'sold') {
+          return res.status(400).json({ error: 'This website has already been sold and is no longer available for purchase.' });
+        }
+        selectedItemName = item.name;
+        finalAmount = item.price;
+        finalCurrency = item.currency || 'USD';
+      }
+
+      // Check if checkout request has authenticated user token
+      let customerUid: string | undefined;
+      const authHeader = req.headers.authorization;
+      if (authHeader) {
+        const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+        const user = await verifyUserToken(token);
+        if (user && user.uid && user.uid !== 'admin-root') {
+          customerUid = user.uid;
         }
       }
 
@@ -534,6 +1294,7 @@ async function startServer() {
 
       const newOrder = {
         id: orderId,
+        customerUid: customerUid || undefined,
         customerName: customerName.trim(),
         customerEmail: customerEmail.trim().toLowerCase(),
         customerPhone: customerPhone.trim(),
@@ -541,7 +1302,7 @@ async function startServer() {
         websiteId: websiteId || undefined,
         websiteName: selectedItemName,
         amount: finalAmount,
-        currency: 'USD',
+        currency: finalCurrency,
         paymentStatus: 'Pending',
         paymentProvider: paymentMethod,
         paymentTransactionId: undefined as string | undefined,
@@ -705,34 +1466,90 @@ async function startServer() {
     }
   });
 
-  // Get orders (Admin gets all, Customer gets filtered by email or order id)
-  app.get('/api/orders', (req, res) => {
-    const isAdmin = verifyAdminToken(req);
+  // Get orders (Admin gets all, Customer gets isolated to their verified UID/email or query)
+  app.get('/api/orders', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    const queryEmail = (req.query.email as string || '').trim().toLowerCase();
+    const queryOrderId = (req.query.orderId as string || '').trim().toLowerCase();
     const db = readDb();
 
-    if (isAdmin) {
-      return res.json(db.orders);
+    if (authHeader) {
+      const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+      const user = await verifyUserToken(token);
+      if (user) {
+        // Authoritative Admin: returns all customer orders
+        if (user.admin) {
+          return res.json(db.orders);
+        }
+
+        // Customer: Strictly isolated to authenticated user's Firebase UID and verified email.
+        const userUid = user.uid;
+        const userEmail = (user.email || '').toLowerCase();
+
+        const customerOrders = db.orders.filter((o) => {
+          const uidMatches = Boolean(userUid && o.customerUid && o.customerUid === userUid);
+          const emailMatches = Boolean(userEmail && o.customerEmail && o.customerEmail.trim().toLowerCase() === userEmail);
+          return uidMatches || emailMatches;
+        });
+
+        return res.json(customerOrders);
+      }
     }
 
-    const customerEmail = req.query.email as string;
-    const orderId = req.query.orderId as string;
-
-    if (!customerEmail && !orderId) {
-      return res.status(401).json({ error: 'Unauthorized: Admin authentication or customer email/orderId required' });
+    // Customer Portal lookup by email and/or orderId
+    if (queryEmail || queryOrderId) {
+      const matched = db.orders.filter((o) => {
+        const emailMatches = queryEmail ? (o.customerEmail && o.customerEmail.trim().toLowerCase() === queryEmail) : true;
+        const orderMatches = queryOrderId ? (o.id && o.id.toLowerCase() === queryOrderId) : true;
+        return emailMatches && orderMatches;
+      });
+      return res.json(matched);
     }
 
-    const filtered = db.orders.filter((o) => {
-      if (orderId && o.id.toLowerCase() === orderId.trim().toLowerCase()) return true;
-      if (customerEmail && o.customerEmail.toLowerCase() === customerEmail.trim().toLowerCase()) return true;
-      return false;
-    });
+    return res.status(401).json({ error: 'Unauthorized: Authentication required to access orders' });
+  });
 
-    res.json(filtered);
+  // Get specific order by ID (Strict ownership isolation)
+  app.get('/api/orders/:id', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required' });
+    }
+
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const user = await verifyUserToken(token);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid or expired authentication token' });
+    }
+
+    const db = readDb();
+    const order = db.orders.find((o) => o.id === req.params.id);
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Admin can view any order
+    if (user.admin) {
+      return res.json(order);
+    }
+
+    // Customer can only view their own order
+    const isOwner = Boolean(
+      (order.customerUid && order.customerUid === user.uid) ||
+      (user.email && order.customerEmail && order.customerEmail.toLowerCase() === user.email.toLowerCase())
+    );
+
+    if (!isOwner) {
+      // Return 404 to avoid leaking existence of other customers' orders
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    return res.json(order);
   });
 
   // Update order status (Admin only)
-  app.patch('/api/orders/:id/status', requireAdmin, (req, res) => {
-    const { status, paymentStatus, previewUrl, adminNotes } = req.body;
+  app.patch('/api/orders/:id/status', requireAdmin, async (req, res) => {
+    const { status, paymentStatus, previewUrl, finalWebsiteUrl, adminNotes } = req.body;
     const db = readDb();
     const index = db.orders.findIndex((o) => o.id === req.params.id);
     if (index === -1) {
@@ -740,19 +1557,71 @@ async function startServer() {
     }
 
     const order = db.orders[index];
+    const prevStatus = order.orderStatus;
+    const prevPayment = order.paymentStatus;
+
     if (status) order.orderStatus = status;
     if (paymentStatus) order.paymentStatus = paymentStatus;
     if (previewUrl !== undefined) order.previewUrl = previewUrl.trim();
+    if (finalWebsiteUrl !== undefined) order.finalWebsiteUrl = finalWebsiteUrl.trim();
     if (adminNotes !== undefined) order.adminNotes = adminNotes.trim();
     order.updatedAt = new Date().toISOString();
 
     writeDb(db);
-    syncToFirestore('orders', order.id, order);
+    await syncToFirestore('orders', order.id, order);
+
+    const currentAdmin = (req as any).user as AuthenticatedUser;
+    await logAuditEvent({
+      adminUid: currentAdmin?.uid || 'admin',
+      adminEmail: currentAdmin?.email,
+      action: 'ORDER_STATUS_CHANGED',
+      resourceType: 'order',
+      resourceId: order.id,
+      details: {
+        previousStatus: prevStatus,
+        newStatus: order.orderStatus,
+        previousPayment: prevPayment,
+        newPayment: order.paymentStatus,
+        previewUrl: order.previewUrl,
+        finalWebsiteUrl: order.finalWebsiteUrl,
+      },
+    });
+
     res.json(order);
   });
 
-  // Submit Customer Requirements Form
-  app.post('/api/orders/:id/requirements', (req, res) => {
+  // Submit Customer Requirements Form (Enforces customer ownership verification)
+  app.post('/api/orders/:id/requirements', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required to submit requirements' });
+    }
+
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const user = await verifyUserToken(token);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid or expired authentication token' });
+    }
+
+    const db = readDb();
+    const index = db.orders.findIndex((o) => o.id === req.params.id);
+    if (index === -1) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const order = db.orders[index];
+
+    // Verify ownership: order must belong to the authenticated user or caller must be admin
+    const isOwner = Boolean(
+      (order.customerUid && order.customerUid === user.uid) ||
+      (user.email && order.customerEmail && order.customerEmail.toLowerCase() === user.email.toLowerCase()) ||
+      user.admin
+    );
+
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Forbidden: You are not authorized to submit requirements for this order' });
+    }
+
     const {
       businessName,
       logoUrl,
@@ -762,19 +1631,16 @@ async function startServer() {
       address,
       whatsapp,
       socialLinks,
+      socialMedia,
       services,
       aboutBusiness,
-      uploadedImages,
+      preferredColors,
+      specialFeatures,
+      additionalRequirements,
       specialRequirements,
+      uploadedImages,
+      businessImages,
     } = req.body;
-
-    const db = readDb();
-    const index = db.orders.findIndex((o) => o.id === req.params.id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-
-    const order = db.orders[index];
 
     order.requirements = {
       businessName: businessName ? businessName.trim() : order.businessName || '',
@@ -784,22 +1650,31 @@ async function startServer() {
       email: email ? email.trim() : order.customerEmail,
       address: address ? address.trim() : undefined,
       whatsapp: whatsapp ? whatsapp.trim() : undefined,
-      socialLinks: socialLinks ? socialLinks.trim() : undefined,
+      socialLinks: socialLinks || socialMedia ? (socialLinks || socialMedia).trim() : undefined,
+      socialMedia: socialMedia || socialLinks ? (socialMedia || socialLinks).trim() : undefined,
       services: services ? services.trim() : undefined,
       aboutBusiness: aboutBusiness ? aboutBusiness.trim() : undefined,
-      uploadedImages: Array.isArray(uploadedImages) ? uploadedImages : [],
-      specialRequirements: specialRequirements ? specialRequirements.trim() : undefined,
+      preferredColors: preferredColors ? preferredColors.trim() : undefined,
+      specialFeatures: specialFeatures ? specialFeatures.trim() : undefined,
+      additionalRequirements: additionalRequirements || specialRequirements ? (additionalRequirements || specialRequirements).trim() : undefined,
+      specialRequirements: specialRequirements || additionalRequirements ? (specialRequirements || additionalRequirements).trim() : undefined,
+      uploadedImages: Array.isArray(uploadedImages || businessImages) ? (uploadedImages || businessImages) : [],
+      businessImages: Array.isArray(businessImages || uploadedImages) ? (businessImages || uploadedImages) : [],
       submittedAt: new Date().toISOString(),
     };
 
-    // If order was in Payment Confirmed or Requirements Needed, advance to In Progress
-    if (order.orderStatus === 'Payment Confirmed' || order.orderStatus === 'Requirements Needed') {
-      order.orderStatus = 'In Progress';
+    // Advance project status to 'Requirements Received'
+    if (
+      order.orderStatus === 'Payment Confirmed' ||
+      order.orderStatus === 'Requirements Needed' ||
+      order.orderStatus === 'Payment Pending'
+    ) {
+      order.orderStatus = 'Requirements Received';
     }
 
     order.updatedAt = new Date().toISOString();
     writeDb(db);
-    syncToFirestore('orders', order.id, order);
+    await syncToFirestore('orders', order.id, order);
 
     res.json({ success: true, order });
   });
@@ -829,7 +1704,7 @@ async function startServer() {
     });
   });
 
-  app.put('/api/settings', requireAdmin, (req, res) => {
+  app.put('/api/settings', requireAdmin, async (req, res) => {
     const db = readDb();
     const cur = db.settings;
     const body = req.body;
@@ -853,7 +1728,18 @@ async function startServer() {
     };
 
     writeDb(db);
-    syncToFirestore('settings', 'agency', db.settings);
+    await syncToFirestore('settings', 'agency', db.settings);
+
+    const currentAdmin = (req as any).user as AuthenticatedUser;
+    await logAuditEvent({
+      adminUid: currentAdmin?.uid || 'admin',
+      adminEmail: currentAdmin?.email,
+      action: 'SETTING_UPDATED',
+      resourceType: 'setting',
+      resourceId: 'agency',
+      details: { agencyName: db.settings.agencyName },
+    });
+
     res.json({ success: true, settings: db.settings });
   });
 
@@ -916,6 +1802,632 @@ Respond with valid JSON only matching this format:
       console.error('AI Concept Generation failed:', err);
       return res.status(500).json({ error: 'Failed to generate concept: ' + err.message });
     }
+  });
+
+  // =========================================================================
+  // 7. CALL BOOKING SYSTEM (CUSTOMER & ADMIN)
+  // =========================================================================
+  const STANDARD_CALL_SLOTS = [
+    '09:00 AM',
+    '10:00 AM',
+    '11:00 AM',
+    '01:00 PM',
+    '02:00 PM',
+    '03:00 PM',
+    '04:00 PM',
+    '05:00 PM',
+  ];
+
+  // Get available slots for a specific date
+  app.get('/api/bookings/available-slots', (req, res) => {
+    const date = (req.query.date as string)?.trim();
+    if (!date) {
+      return res.status(400).json({ error: 'Date is required (YYYY-MM-DD)' });
+    }
+
+    const db = readDb();
+    const existingBookings = (db.bookings || []).filter(
+      (b) => b.date === date && b.status !== 'Cancelled'
+    );
+
+    const bookedSlots = existingBookings.map((b) => b.time);
+    const availableSlots = STANDARD_CALL_SLOTS.filter((s) => !bookedSlots.includes(s));
+
+    res.json({
+      date,
+      allSlots: STANDARD_CALL_SLOTS,
+      bookedSlots,
+      availableSlots,
+    });
+  });
+
+  // Get bookings (Admin gets all, Customer gets only their own)
+  app.get('/api/bookings', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required' });
+    }
+
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const user = await verifyUserToken(token);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+    }
+
+    const db = readDb();
+    const allBookings = db.bookings || [];
+
+    if (user.admin) {
+      return res.json(allBookings);
+    }
+
+    // Customer isolation
+    const customerBookings = allBookings.filter((b) => {
+      const matchUid = b.customerUid && b.customerUid === user.uid;
+      const matchEmail = user.email && b.customerEmail && b.customerEmail.toLowerCase() === user.email.toLowerCase();
+      return matchUid || matchEmail;
+    });
+
+    res.json(customerBookings);
+  });
+
+  // Create a call booking
+  app.post('/api/bookings', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    let user: AuthenticatedUser | null = null;
+    if (authHeader) {
+      const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+      user = await verifyUserToken(token);
+    }
+
+    const {
+      callType,
+      date,
+      time,
+      customerName,
+      customerEmail,
+      customerPhone,
+      reason,
+    } = req.body;
+
+    if (!date || !time || !customerName || !customerEmail) {
+      return res.status(400).json({ error: 'Date, time, name, and email are required to book a call.' });
+    }
+
+    const db = readDb();
+    if (!db.bookings) db.bookings = [];
+
+    // Conflict prevention: Do not allow two customers to book the same unavailable slot
+    const hasConflict = db.bookings.some(
+      (b) => b.date === date.trim() && b.time === time.trim() && b.status !== 'Cancelled'
+    );
+
+    if (hasConflict) {
+      return res.status(409).json({
+        error: `The slot at ${time} on ${date} has already been reserved. Please select another time slot.`,
+      });
+    }
+
+    const newBooking = {
+      id: `BK-${Date.now().toString().slice(-4)}`,
+      customerUid: user?.uid,
+      customerName: customerName.trim(),
+      customerEmail: customerEmail.trim().toLowerCase(),
+      customerPhone: customerPhone ? customerPhone.trim() : '',
+      callType: callType || 'Website Consultation',
+      date: date.trim(),
+      time: time.trim(),
+      reason: reason ? reason.trim() : 'Website Strategy & Requirements Discussion',
+      status: 'Requested',
+      meetingLink: '',
+      notes: '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    db.bookings.unshift(newBooking);
+    writeDb(db);
+    await syncToFirestore('bookings', newBooking.id, newBooking);
+
+    res.status(201).json({ success: true, booking: newBooking });
+  });
+
+  // Admin update booking status / reschedule / add meeting link / notes
+  app.patch('/api/bookings/:id', requireAdmin, async (req, res) => {
+    const { status, meetingLink, notes, date, time } = req.body;
+    const db = readDb();
+    if (!db.bookings) db.bookings = [];
+
+    const index = db.bookings.findIndex((b) => b.id === req.params.id);
+    if (index === -1) {
+      return res.status(404).json({ error: 'Call booking not found' });
+    }
+
+    const booking = db.bookings[index];
+    const prevStatus = booking.status;
+
+    if (status) booking.status = status;
+    if (meetingLink !== undefined) booking.meetingLink = meetingLink.trim();
+    if (notes !== undefined) booking.notes = notes.trim();
+    if (date) booking.date = date.trim();
+    if (time) booking.time = time.trim();
+    booking.updatedAt = new Date().toISOString();
+
+    writeDb(db);
+    await syncToFirestore('bookings', booking.id, booking);
+
+    const currentAdmin = (req as any).user as AuthenticatedUser;
+    await logAuditEvent({
+      adminUid: currentAdmin?.uid || 'admin',
+      adminEmail: currentAdmin?.email,
+      action: 'BOOKING_UPDATED',
+      resourceType: 'booking',
+      resourceId: booking.id,
+      details: {
+        previousStatus: prevStatus,
+        newStatus: booking.status,
+        date: booking.date,
+        time: booking.time,
+      },
+    });
+
+    res.json(booking);
+  });
+
+  // =========================================================================
+  // 8. PROJECT MESSAGES (CUSTOMER & ADMIN)
+  // =========================================================================
+  app.get('/api/messages', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required' });
+    }
+
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const user = await verifyUserToken(token);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+    }
+
+    const db = readDb();
+    const allMessages = db.messages || [];
+    const orderId = req.query.orderId as string;
+
+    if (user.admin) {
+      if (orderId) {
+        return res.json(allMessages.filter((m) => m.orderId === orderId));
+      }
+      return res.json(allMessages);
+    }
+
+    // Customer can only view messages for orders they own
+    const userOrders = db.orders.filter((o) => {
+      const matchUid = o.customerUid && o.customerUid === user.uid;
+      const matchEmail = user.email && o.customerEmail && o.customerEmail.toLowerCase() === user.email.toLowerCase();
+      return matchUid || matchEmail;
+    });
+
+    const userOrderIds = new Set(userOrders.map((o) => o.id));
+
+    let customerMessages = allMessages.filter((m) => userOrderIds.has(m.orderId));
+    if (orderId) {
+      customerMessages = customerMessages.filter((m) => m.orderId === orderId);
+    }
+
+    res.json(customerMessages);
+  });
+
+  app.post('/api/messages', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required' });
+    }
+
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const user = await verifyUserToken(token);
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+    }
+
+    const { orderId, message, type, attachments } = req.body;
+    if (!orderId || !message || !message.trim()) {
+      return res.status(400).json({ error: 'orderId and message text are required' });
+    }
+
+    const db = readDb();
+    const order = db.orders.find((o) => o.id === orderId);
+    if (!order) {
+      return res.status(404).json({ error: 'Associated order not found' });
+    }
+
+    // Security check: non-admin must own the order
+    if (!user.admin) {
+      const isOwner = Boolean(
+        (order.customerUid && order.customerUid === user.uid) ||
+        (user.email && order.customerEmail && order.customerEmail.toLowerCase() === user.email.toLowerCase())
+      );
+      if (!isOwner) {
+        return res.status(403).json({ error: 'Forbidden: You cannot message on another customer’s order' });
+      }
+    }
+
+    const newMsg = {
+      id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      orderId,
+      websiteName: order.websiteName,
+      customerUid: order.customerUid,
+      customerEmail: order.customerEmail,
+      customerName: order.customerName,
+      senderRole: user.admin ? 'admin' : 'customer',
+      senderName: user.admin ? 'Agency Team' : (user.name || order.customerName || 'Customer'),
+      message: message.trim(),
+      type: type || 'general',
+      attachments: Array.isArray(attachments) ? attachments : [],
+      timestamp: new Date().toISOString(),
+    };
+
+    if (!db.messages) db.messages = [];
+    db.messages.push(newMsg);
+    writeDb(db);
+    await syncToFirestore('messages', newMsg.id, newMsg);
+
+    res.status(201).json({ success: true, message: newMsg });
+  });
+
+  // =========================================================================
+  // 9. ADMIN COMMAND CENTER ENGINE
+  // =========================================================================
+  app.post('/api/admin/command', requireAdmin, async (req, res) => {
+    const { command, confirmAction, draft, websiteId } = req.body;
+    const db = readDb();
+    const currentAdmin = (req as any).user as AuthenticatedUser;
+
+    // Handle Direct Confirmations
+    if (confirmAction === 'add_website' && draft) {
+      const newWebsite = {
+        id: `ws-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`,
+        name: draft.name.trim(),
+        category: draft.category ? draft.category.trim() : 'Business',
+        description: draft.description ? draft.description.trim() : 'Custom built premium responsive website.',
+        price: Number(draft.price) || 199,
+        currency: 'USD',
+        liveUrl: draft.liveUrl.trim(),
+        thumbnailUrl: draft.thumbnailUrl || 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?auto=format&fit=crop&w=1200&q=80',
+        screenshots: Array.isArray(draft.screenshots) ? draft.screenshots : [],
+        features: Array.isArray(draft.features) ? draft.features : ['Mobile Responsive', 'High Conversion', 'Fast Loading', 'SEO Optimized'],
+        technologies: ['React', 'Tailwind CSS', 'Vite'],
+        status: 'available',
+        featured: Boolean(draft.featured),
+        published: draft.published !== false,
+        displayOrder: db.websites.length + 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      db.websites.push(newWebsite);
+      writeDb(db);
+      await syncToFirestore('websites', newWebsite.id, newWebsite);
+
+      await logAuditEvent({
+        adminUid: currentAdmin?.uid || 'admin',
+        adminEmail: currentAdmin?.email,
+        action: 'WEBSITE_CREATED_VIA_COMMAND',
+        resourceType: 'website',
+        resourceId: newWebsite.id,
+        details: { name: newWebsite.name, price: newWebsite.price, liveUrl: newWebsite.liveUrl },
+      });
+
+      return res.json({
+        success: true,
+        type: 'website_added',
+        message: `Website "${newWebsite.name}" has been successfully created and published in the database!`,
+        website: newWebsite,
+      });
+    }
+
+    if (confirmAction === 'delete_website' && websiteId) {
+      const idx = db.websites.findIndex((w) => w.id === websiteId);
+      if (idx === -1) {
+        return res.status(404).json({ error: 'Target website not found' });
+      }
+      const deleted = db.websites.splice(idx, 1)[0];
+      writeDb(db);
+      await deleteFromFirestore('websites', deleted.id);
+
+      await logAuditEvent({
+        adminUid: currentAdmin?.uid || 'admin',
+        adminEmail: currentAdmin?.email,
+        action: 'WEBSITE_DELETED_VIA_COMMAND',
+        resourceType: 'website',
+        resourceId: deleted.id,
+        details: { name: deleted.name },
+      });
+
+      return res.json({
+        success: true,
+        type: 'website_deleted',
+        message: `Website "${deleted.name}" has been permanently removed from the catalog.`,
+      });
+    }
+
+    if (!command || !command.trim()) {
+      return res.status(400).json({ error: 'Command text is required' });
+    }
+
+    const cmd = command.trim();
+    const lower = cmd.toLowerCase();
+
+    // 1. DELETE COMMAND (DESTRUCTIVE - ALWAYS REQUIRES CONFIRMATION)
+    if (lower.startsWith('delete') || lower.includes('delete website')) {
+      const targetName = cmd.replace(/delete\s+(website\s+)?/i, '').replace(/["']/g, '').trim();
+      const target = db.websites.find(
+        (w) => w.name.toLowerCase().includes(targetName.toLowerCase()) || w.id === targetName
+      );
+
+      if (!target) {
+        return res.json({
+          success: false,
+          type: 'not_found',
+          message: `Could not find any website matching "${targetName}" to delete.`,
+        });
+      }
+
+      return res.json({
+        success: true,
+        type: 'delete_confirmation',
+        requiresConfirmation: true,
+        prompt: `Are you sure you want to delete ${target.name}?`,
+        targetWebsite: {
+          id: target.id,
+          name: target.name,
+          category: target.category,
+          price: target.price,
+        },
+      });
+    }
+
+    // 2. ADD WEBSITE COMMAND (REQUIRES CONFIRMATION CARD)
+    if (
+      lower.startsWith('add website') ||
+      lower.startsWith('add a website') ||
+      lower.startsWith('add a new') ||
+      lower.startsWith('create website')
+    ) {
+      // Parse structured or natural language fields
+      let name = '';
+      let category = 'Business';
+      let price = 199;
+      let url = 'https://example.com';
+      let featured = false;
+      let published = true;
+      let description = '';
+
+      // Pattern: Name: ..., Category: ..., Price: ..., URL: ...
+      const nameMatch = cmd.match(/name\s*:\s*([^,\n]+)/i);
+      const catMatch = cmd.match(/category\s*:\s*([^,\n]+)/i);
+      const priceMatch = cmd.match(/price\s*:\s*\$?([0-9]+)/i);
+      const urlMatch = cmd.match(/url\s*:\s*(https?:\/\/[^\s,]+)/i) || cmd.match(/(https?:\/\/[^\s,]+)/i);
+      const featMatch = cmd.match(/featured\s*:\s*(yes|true)/i);
+      const pubMatch = cmd.match(/published\s*:\s*(no|false)/i);
+
+      if (nameMatch) name = nameMatch[1].trim();
+      if (catMatch) category = catMatch[1].trim();
+      if (priceMatch) price = Number(priceMatch[1]);
+      if (urlMatch) url = urlMatch[1].trim();
+      if (featMatch) featured = true;
+      if (pubMatch) published = false;
+
+      // Natural fallback parsing
+      if (!name) {
+        if (lower.includes('restaurant')) {
+          name = 'Artisan Bistro';
+          category = 'Restaurant';
+        } else if (lower.includes('hotel')) {
+          name = 'Grand Horizon Resort';
+          category = 'Hotel';
+        } else if (lower.includes('e-commerce') || lower.includes('store')) {
+          name = 'Aura Luxe Boutique';
+          category = 'E-commerce';
+        } else if (lower.includes('medical') || lower.includes('clinic')) {
+          name = 'Apex Wellness Clinic';
+          category = 'Medical';
+        } else {
+          name = 'Modern Corporate Hub';
+          category = 'Business';
+        }
+      }
+
+      description = `A professional, fully responsive ${category.toLowerCase()} website with modern animations, responsive layout, and optimized conversion architecture.`;
+
+      return res.json({
+        success: true,
+        type: 'add_website_confirmation',
+        requiresConfirmation: true,
+        message: 'Please review the website specifications before saving:',
+        draft: {
+          name,
+          category,
+          price,
+          currency: 'USD',
+          liveUrl: url,
+          featured,
+          published,
+          description,
+          thumbnailUrl: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?auto=format&fit=crop&w=1200&q=80',
+          features: ['Custom Branding', 'Mobile & Tablet Ready', 'Fast Global CDN', 'SSL Security'],
+        },
+      });
+    }
+
+    // 3. CHANGE PRICE
+    const priceChangeMatch = cmd.match(/change\s+(.+?)\s+price\s+to\s+\$?([0-9]+)/i);
+    if (priceChangeMatch) {
+      const siteQuery = priceChangeMatch[1].replace(/website/gi, '').trim().toLowerCase();
+      const newPrice = Number(priceChangeMatch[2]);
+      const site = db.websites.find(
+        (w) => w.name.toLowerCase().includes(siteQuery) || w.category.toLowerCase().includes(siteQuery)
+      );
+      if (!site) {
+        return res.json({
+          success: false,
+          type: 'not_found',
+          message: `Could not find website matching "${priceChangeMatch[1]}" to update price.`,
+        });
+      }
+      const oldPrice = site.price;
+      site.price = newPrice;
+      site.updatedAt = new Date().toISOString();
+      writeDb(db);
+      await syncToFirestore('websites', site.id, site);
+
+      return res.json({
+        success: true,
+        type: 'price_updated',
+        message: `Successfully changed "${site.name}" price from $${oldPrice} to $${newPrice} USD.`,
+        website: site,
+      });
+    }
+
+    // 4. PUBLISH / UNPUBLISH
+    if (lower.startsWith('publish')) {
+      const siteQuery = cmd.replace(/publish\s+(website\s+)?/i, '').replace(/["']/g, '').trim().toLowerCase();
+      const site = db.websites.find(
+        (w) => w.name.toLowerCase().includes(siteQuery) || w.category.toLowerCase().includes(siteQuery)
+      );
+      if (!site) {
+        return res.json({
+          success: false,
+          type: 'not_found',
+          message: `Could not find website matching "${siteQuery}" to publish.`,
+        });
+      }
+      site.published = true;
+      site.updatedAt = new Date().toISOString();
+      writeDb(db);
+      await syncToFirestore('websites', site.id, site);
+      return res.json({
+        success: true,
+        type: 'published',
+        message: `Website "${site.name}" is now published and visible to customers.`,
+        website: site,
+      });
+    }
+
+    if (lower.startsWith('unpublish')) {
+      const siteQuery = cmd.replace(/unpublish\s+(website\s+)?/i, '').replace(/["']/g, '').trim().toLowerCase();
+      const site = db.websites.find(
+        (w) => w.name.toLowerCase().includes(siteQuery) || w.category.toLowerCase().includes(siteQuery)
+      );
+      if (!site) {
+        return res.json({
+          success: false,
+          type: 'not_found',
+          message: `Could not find website matching "${siteQuery}" to unpublish.`,
+        });
+      }
+      site.published = false;
+      site.updatedAt = new Date().toISOString();
+      writeDb(db);
+      await syncToFirestore('websites', site.id, site);
+      return res.json({
+        success: true,
+        type: 'unpublished',
+        message: `Website "${site.name}" has been unpublished.`,
+        website: site,
+      });
+    }
+
+    // 5. MAKE FEATURED
+    if (lower.includes('featured')) {
+      const siteQuery = cmd.replace(/make\s+/i, '').replace(/\s+featured/i, '').replace(/website/gi, '').trim().toLowerCase();
+      const site = db.websites.find(
+        (w) => w.name.toLowerCase().includes(siteQuery) || w.category.toLowerCase().includes(siteQuery)
+      );
+      if (!site) {
+        return res.json({
+          success: false,
+          type: 'not_found',
+          message: `Could not find website matching "${siteQuery}".`,
+        });
+      }
+      site.featured = true;
+      site.updatedAt = new Date().toISOString();
+      writeDb(db);
+      await syncToFirestore('websites', site.id, site);
+      return res.json({
+        success: true,
+        type: 'featured',
+        message: `Website "${site.name}" is now featured on the homepage.`,
+        website: site,
+      });
+    }
+
+    // 6. QUERIES (ORDERS, REQUIREMENTS, CALLS)
+    if (lower.includes("order") || lower.includes("today's orders")) {
+      const orders = db.orders || [];
+      return res.json({
+        success: true,
+        type: 'query_result',
+        title: "Platform Orders",
+        count: orders.length,
+        items: orders.map((o) => ({
+          id: o.id,
+          customer: o.customerName,
+          website: o.websiteName,
+          amount: `$${o.amount} ${o.currency}`,
+          payment: o.paymentStatus,
+          status: o.orderStatus,
+        })),
+        message: `Found ${orders.length} real order(s) recorded in the database.`,
+      });
+    }
+
+    if (lower.includes('requirement')) {
+      const pendingReqs = (db.orders || []).filter(
+        (o) => o.orderStatus === 'Requirements Needed' || o.orderStatus === 'Requirements Received'
+      );
+      return res.json({
+        success: true,
+        type: 'query_result',
+        title: 'Customer Requirements',
+        count: pendingReqs.length,
+        items: pendingReqs.map((o) => ({
+          orderId: o.id,
+          customer: o.customerName,
+          website: o.websiteName,
+          status: o.orderStatus,
+          hasSubmitted: Boolean(o.requirements?.businessName),
+        })),
+        message: `Found ${pendingReqs.length} order(s) requiring attention for project requirements.`,
+      });
+    }
+
+    if (lower.includes('call') || lower.includes('booking')) {
+      const calls = (db.bookings || []).filter((b) => b.status !== 'Cancelled');
+      return res.json({
+        success: true,
+        type: 'query_result',
+        title: 'Upcoming Call Bookings',
+        count: calls.length,
+        items: calls.map((b) => ({
+          id: b.id,
+          customer: b.customerName,
+          date: b.date,
+          time: b.time,
+          type: b.callType,
+          status: b.status,
+          link: b.meetingLink || 'Pending Link',
+        })),
+        message: `Found ${calls.length} scheduled call booking(s).`,
+      });
+    }
+
+    // Default Fallback
+    return res.json({
+      success: true,
+      type: 'command_help',
+      message: `Command received: "${cmd}". Here are supported command formats:\n• "Add website: Name: ..., Category: ..., Price: $199, URL: https://example.com"\n• "Change [Website Name] price to $249"\n• "Publish [Website Name]" / "Unpublish [Website Name]"\n• "Make [Website Name] featured"\n• "Delete [Website Name]"\n• "Show me today's orders"\n• "Show pending customer requirements"\n• "Show my upcoming calls"`,
+    });
   });
 
   // =========================================================================

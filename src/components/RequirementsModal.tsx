@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Upload, CheckCircle, FileText, Image as ImageIcon, Sparkles, Send } from 'lucide-react';
 import { CustomerRequirements } from '../types';
 import { submitOrderRequirements, uploadImage } from '../services/agencyApi';
+import { useAuth } from '../context/AuthContext';
 
 interface RequirementsModalProps {
   orderId: string;
@@ -18,6 +19,7 @@ export const RequirementsModal: React.FC<RequirementsModalProps> = ({
   onClose,
   onSuccess,
 }) => {
+  const { getIdToken } = useAuth();
   const [formData, setFormData] = useState<CustomerRequirements>({
     businessName: initialRequirements?.businessName || '',
     logoUrl: initialRequirements?.logoUrl || '',
@@ -71,10 +73,15 @@ export const RequirementsModal: React.FC<RequirementsModalProps> = ({
     try {
       setSubmitting(true);
       setError(null);
-      const res = await submitOrderRequirements(orderId, {
-        ...formData,
-        submittedAt: new Date().toISOString(),
-      });
+      const token = await getIdToken();
+      const res = await submitOrderRequirements(
+        orderId,
+        {
+          ...formData,
+          submittedAt: new Date().toISOString(),
+        },
+        token || undefined
+      );
       setSubmittedSuccess(true);
       setTimeout(() => {
         onSuccess(formData);

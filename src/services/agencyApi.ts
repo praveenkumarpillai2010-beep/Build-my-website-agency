@@ -1,4 +1,4 @@
-import { RealWebsite, Order, CustomerRequirements, AgencySettings, OrderStatus, PaymentStatus } from '../types';
+import { RealWebsite, Order, CustomerRequirements, AgencySettings, OrderStatus, PaymentStatus, CallBooking, ProjectMessage } from '../types';
 
 export const ADMIN_TOKEN_KEY = 'bmw_admin_token';
 export const CUSTOMER_SESSION_KEY = 'bmw_customer_session';
@@ -91,6 +91,26 @@ export async function updateWebsite(id: string, data: Partial<RealWebsite>, toke
   return await res.json();
 }
 
+export async function quickUpdateWebsite(
+  id: string,
+  updates: { price?: number; status?: string; featured?: boolean; published?: boolean },
+  token: string
+): Promise<RealWebsite> {
+  const res = await fetch(`/api/websites/${encodeURIComponent(id)}/quick`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to update website');
+  }
+  return await res.json();
+}
+
 export async function deleteWebsite(id: string, token: string): Promise<boolean> {
   const res = await fetch(`/api/websites/${encodeURIComponent(id)}`, {
     method: 'DELETE',
@@ -127,35 +147,47 @@ export async function verifyAdmin(token: string): Promise<boolean> {
   }
 }
 
-export async function customerLogin(email: string, orderId?: string): Promise<{ customer: any; orders: Order[] }> {
+export async function customerLogin(
+  email: string,
+  orderId?: string,
+  isGoogleAuth?: boolean
+): Promise<{ customer: any; orders: Order[] }> {
   const res = await fetch('/api/auth/customer/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, orderId }),
+    body: JSON.stringify({ email, orderId, isGoogleAuth }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to sign in');
   }
   const data = await res.json();
-  setStoredCustomerSession(data.customer);
+  if (data?.customer) {
+    setStoredCustomerSession(data.customer);
+  }
   return data;
 }
 
-export async function fetchOrders(options?: { adminToken?: string; email?: string; orderId?: string }): Promise<Order[]> {
+export async function fetchOrders(options?: {
+  adminToken?: string;
+  token?: string;
+  email?: string;
+  orderId?: string;
+}): Promise<Order[]> {
   try {
     const headers: Record<string, string> = {};
     let query = '';
 
-    if (options?.adminToken) {
-      headers['Authorization'] = `Bearer ${options.adminToken}`;
-    } else if (options?.email || options?.orderId) {
+    const authToken = options?.adminToken || options?.token;
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+
+    if (options?.email || options?.orderId) {
       const params = new URLSearchParams();
       if (options.email) params.set('email', options.email);
       if (options.orderId) params.set('orderId', options.orderId);
       query = `?${params.toString()}`;
-    } else {
-      return [];
     }
 
     const res = await fetch(`/api/orders${query}`, { headers });
@@ -171,7 +203,7 @@ export async function updateOrderStatus(
   id: string,
   status: OrderStatus,
   token: string,
-  extra?: { paymentStatus?: PaymentStatus; previewUrl?: string; adminNotes?: string }
+  extra?: { paymentStatus?: PaymentStatus; previewUrl?: string; finalWebsiteUrl?: string; adminNotes?: string }
 ): Promise<Order> {
   const res = await fetch(`/api/orders/${encodeURIComponent(id)}/status`, {
     method: 'PATCH',
@@ -190,11 +222,17 @@ export async function updateOrderStatus(
 
 export async function submitOrderRequirements(
   orderId: string,
-  requirements: CustomerRequirements
+  requirements: CustomerRequirements,
+  token?: string
 ): Promise<{ success: boolean; order: Order }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const effectiveToken = token || getStoredAdminToken();
+  if (effectiveToken) {
+    headers['Authorization'] = `Bearer ${effectiveToken}`;
+  }
   const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/requirements`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(requirements),
   });
   if (!res.ok) {
@@ -301,3 +339,210 @@ export async function uploadImage(dataUrl: string, filename?: string): Promise<{
   }
   return await res.json();
 }
+
+export async function fetchAdminUsers(token: string): Promise<any[]> {
+  const res = await fetch('/api/admin/users/admins', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error('Failed to load administrator accounts');
+  return await res.json();
+}
+
+export async function grantAdminUser(emailOrUid: { email?: string; uid?: string }, token: string): Promise<any> {
+  const res = await fetch('/api/admin/users/grant', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(emailOrUid),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to grant admin access');
+  }
+  return await res.json();
+}
+
+export async function revokeAdminUser(emailOrUid: { email?: string; uid?: string }, token: string): Promise<any> {
+  const res = await fetch('/api/admin/users/revoke', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(emailOrUid),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to revoke admin access');
+  }
+  return await res.json();
+}
+
+export async function fetchAuditLogs(token: string): Promise<any[]> {
+  const res = await fetch('/api/admin/audit-logs', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error('Failed to load security audit logs');
+  return await res.json();
+}
+
+// ---------------------------------------------------------------------------
+// CALL BOOKINGS API
+// ---------------------------------------------------------------------------
+export async function fetchAvailableSlots(date: string): Promise<{
+  date: string;
+  allSlots: string[];
+  bookedSlots: string[];
+  availableSlots: string[];
+}> {
+  const res = await fetch(`/api/bookings/available-slots?date=${encodeURIComponent(date)}`);
+  if (!res.ok) throw new Error('Failed to fetch available slots');
+  return await res.json();
+}
+
+export async function fetchBookings(token: string): Promise<CallBooking[]> {
+  const res = await fetch('/api/bookings', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error('Failed to load call bookings');
+  return await res.json();
+}
+
+export async function createBooking(
+  bookingData: {
+    callType?: string;
+    date: string;
+    time: string;
+    customerName: string;
+    customerEmail: string;
+    customerPhone?: string;
+    reason?: string;
+  },
+  token?: string
+): Promise<{ success: boolean; booking: CallBooking }> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  const res = await fetch('/api/bookings', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(bookingData),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to schedule booking');
+  }
+  return await res.json();
+}
+
+export async function updateBooking(
+  id: string,
+  updates: Partial<CallBooking>,
+  token: string
+): Promise<CallBooking> {
+  const res = await fetch(`/api/bookings/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to update booking');
+  }
+  return await res.json();
+}
+
+export async function updateBookingStatus(
+  id: string,
+  status: CallBooking['status'],
+  token: string,
+  meetingLink?: string
+): Promise<CallBooking> {
+  const updates: Partial<CallBooking> = { status };
+  if (meetingLink) updates.meetingLink = meetingLink;
+  return updateBooking(id, updates, token);
+}
+
+// ---------------------------------------------------------------------------
+// PROJECT MESSAGES API
+// ---------------------------------------------------------------------------
+export async function fetchMessages(token: string, orderId?: string): Promise<ProjectMessage[]> {
+  const url = orderId ? `/api/messages?orderId=${encodeURIComponent(orderId)}` : '/api/messages';
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error('Failed to load messages');
+  return await res.json();
+}
+
+export async function sendMessage(
+  payload: {
+    orderId: string;
+    message: string;
+    type?: 'general' | 'revision' | 'approval' | 'support';
+    attachments?: string[];
+  },
+  token: string
+): Promise<{ success: boolean; message: ProjectMessage }> {
+  const res = await fetch('/api/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to send message');
+  }
+  return await res.json();
+}
+
+// ---------------------------------------------------------------------------
+// ADMIN COMMAND CENTER API
+// ---------------------------------------------------------------------------
+export async function executeAdminCommand(
+  payloadOrCommand:
+    | string
+    | {
+        command?: string;
+        confirmAction?: string;
+        draft?: any;
+        websiteId?: string;
+      },
+  token: string,
+  confirmed?: boolean,
+  extra?: any
+): Promise<any> {
+  const body =
+    typeof payloadOrCommand === 'string'
+      ? {
+          command: payloadOrCommand,
+          confirmAction: confirmed ? 'CONFIRMED' : undefined,
+          draft: extra?.draft || extra,
+          websiteId: extra?.websiteId || extra?.targetWebsite?.id,
+        }
+      : payloadOrCommand;
+
+  const res = await fetch('/api/admin/command', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Command execution failed');
+  }
+  return await res.json();
+}
+

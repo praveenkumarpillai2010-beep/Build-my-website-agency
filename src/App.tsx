@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Navbar } from './components/Navbar';
 import { Hero } from './components/Hero';
 import { RealWebsitesSection } from './components/RealWebsitesSection';
@@ -13,6 +13,9 @@ import { FAQSection } from './components/FAQSection';
 import { ContactSection } from './components/ContactSection';
 import { Footer } from './components/Footer';
 import { FloatingSocialContact } from './components/FloatingSocialContact';
+import { LoginScreen } from './components/LoginScreen';
+import { useAuth } from './context/AuthContext';
+import { Sparkles, Loader2 } from 'lucide-react';
 
 // Modals
 import { WebsiteDetailsModal } from './components/WebsiteDetailsModal';
@@ -24,6 +27,12 @@ import { AdminDashboardModal } from './components/AdminDashboardModal';
 import { RealWebsite, Order, PricingPlan, ServiceItem, AIWebsiteConcept } from './types';
 
 export default function App() {
+  const { user, loading: authLoading, isAdmin } = useAuth();
+
+  // Authentication First Screen gate state
+  const [guestMode, setGuestMode] = useState(false);
+  const [hasAutoOpened, setHasAutoOpened] = useState(false);
+
   // Modal states
   const [selectedWebsiteForDetails, setSelectedWebsiteForDetails] = useState<RealWebsite | null>(null);
   const [selectedWebsiteForBuy, setSelectedWebsiteForBuy] = useState<RealWebsite | null>(null);
@@ -34,6 +43,46 @@ export default function App() {
 
   // Sync state trigger
   const [dataRefreshTrigger, setDataRefreshTrigger] = useState(0);
+
+  // Automatic routing upon authentication
+  useEffect(() => {
+    if (user && !hasAutoOpened) {
+      setHasAutoOpened(true);
+      if (isAdmin) {
+        setIsAdminDashboardOpen(true);
+      } else {
+        setIsCustomerDashboardOpen(true);
+      }
+    }
+  }, [user, isAdmin, hasAutoOpened]);
+
+  // Loading state while checking Firebase authentication
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#07090e] flex flex-col items-center justify-center p-4">
+        <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-purple-600 animate-pulse flex items-center justify-center mb-4 shadow-xl shadow-blue-500/20">
+          <Sparkles className="w-6 h-6 text-white" />
+        </div>
+        <p className="text-sm font-semibold text-white">Build My Website</p>
+        <p className="text-xs text-slate-400 mt-1 flex items-center gap-2">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />
+          <span>Initializing secure session...</span>
+        </p>
+      </div>
+    );
+  }
+
+  // Requirement 1: Login MUST be the first screen when user opens platform
+  if (!user && !guestMode) {
+    return (
+      <LoginScreen
+        onSuccess={() => {
+          // Trigger automatic routing in useEffect
+        }}
+        onContinueAsGuest={() => setGuestMode(true)}
+      />
+    );
+  }
 
   const scrollToSection = (sectionId: string) => {
     const el = document.getElementById(sectionId);

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Menu, X, ArrowUpRight, Sparkles, MessageCircle, User, ShieldCheck, Lock } from 'lucide-react';
+import { Menu, X, ArrowUpRight, Sparkles, MessageCircle, User, ShieldCheck, Lock, Terminal } from 'lucide-react';
 import { AGENCY_CONFIG, getWhatsAppUrl } from '../data/agencyData';
 import { useAuth } from '../context/AuthContext';
 
@@ -18,7 +18,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
 
   useEffect(() => {
     const handleScroll = () => {
@@ -120,15 +120,26 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span>{user ? user.displayName?.split(' ')[0] || 'My Orders' : 'Client Portal'}</span>
           </button>
 
-          {/* Admin Dashboard Quick Access Button */}
-          <button
-            onClick={onOpenAdminDashboard}
-            className="p-2 rounded-xl text-slate-400 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 transition-all cursor-pointer"
-            title="Admin Dashboard"
-            aria-label="Admin Dashboard"
-          >
-            <Lock className="w-3.5 h-3.5" />
-          </button>
+          {/* Admin Dashboard / Command Center Quick Access Button */}
+          {isAdmin ? (
+            <button
+              onClick={onOpenAdminDashboard}
+              className="px-3 py-1.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 border border-purple-500/30 shadow-lg shadow-purple-500/20 flex items-center gap-1.5 transition-all cursor-pointer"
+              title="Admin Command Center"
+            >
+              <Terminal className="w-3.5 h-3.5 text-purple-200" />
+              <span className="hidden md:inline">Command Center</span>
+            </button>
+          ) : (
+            <button
+              onClick={onOpenAdminDashboard}
+              className="p-2 rounded-xl text-slate-400 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 transition-all cursor-pointer"
+              title="Admin Access"
+              aria-label="Admin Access"
+            >
+              <Lock className="w-3.5 h-3.5" />
+            </button>
+          )}
 
           {/* Build My Website CTA */}
           <button
